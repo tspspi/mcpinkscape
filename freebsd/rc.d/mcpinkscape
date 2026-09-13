@@ -1,0 +1,76 @@
+#!/bin/sh
+#
+# PROVIDE: mcpinkscape
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+#
+# Add the following to /etc/rc.conf or /etc/rc.conf.local:
+#
+# mcpinkscape_enable="YES"
+# mcpinkscape_config="/usr/local/etc/mcpinkscape.conf"
+# mcpinkscape_daemon_user=""
+#
+# Optional overrides:
+#
+# mcpinkscape_command="/usr/local/bin/mcpinkscape"
+# mcpinkscape_transport="remotehttp"
+# mcpinkscape_flags=""
+# mcpinkscape_pidfile="/var/run/mcpinkscape.pid"
+
+. /etc/rc.subr
+
+name="mcpinkscape"
+rcvar="${name}_enable"
+
+load_rc_config "$name"
+
+: ${mcpinkscape_enable:="NO"}
+: ${mcpinkscape_command:="/usr/local/bin/mcpinkscape"}
+: ${mcpinkscape_config:="/usr/local/etc/mcpinkscape.conf"}
+: ${mcpinkscape_transport:="remotehttp"}
+: ${mcpinkscape_pidfile:="/var/run/${name}.pid"}
+: ${mcpinkscape_flags:=""}
+
+# Keep user switching inside daemon(8).  rc.subr's ${name}_user wrapper would
+# otherwise apply a second transition around the command line below.
+: ${mcpinkscape_daemon_user:="${mcpinkscape_user}"}
+unset mcpinkscape_user
+
+pidfile="${mcpinkscape_pidfile}"
+procname="${mcpinkscape_command}"
+command="/usr/sbin/daemon"
+command_interpreter="/bin/sh"
+start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
+required_files="${mcpinkscape_command} ${mcpinkscape_config}"
+
+if [ -n "${mcpinkscape_daemon_user}" ]; then
+    mcpinkscape_daemon_user_args="-u ${mcpinkscape_daemon_user}"
+else
+    mcpinkscape_daemon_user_args=""
+fi
+
+command_args="-p ${pidfile} -t ${name} ${mcpinkscape_daemon_user_args} ${mcpinkscape_command} --config ${mcpinkscape_config} --transport ${mcpinkscape_transport} ${mcpinkscape_flags}"
+
+mcpinkscape_prestart()
+{
+    local pid_dir
+
+    pid_dir=$(dirname "${pidfile}")
+    if [ -d "${pid_dir}" ]; then
+        return 0
+    fi
+
+    if [ -n "${mcpinkscape_daemon_user}" ]; then
+        install -d -o "${mcpinkscape_daemon_user}" "${pid_dir}"
+    else
+        install -d "${pid_dir}"
+    fi
+}
+
+mcpinkscape_poststop()
+{
+    rm -f "${pidfile}"
+}
+
+run_rc_command "$1"

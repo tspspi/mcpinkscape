@@ -1,0 +1,8 @@
+include LICENSE.md
+include README.md
+include USER_MANUAL.md
+recursive-include examples *.conf
+recursive-include freebsd *
+recursive-include native *
+recursive-include skill *
+recursive-include tests *.py

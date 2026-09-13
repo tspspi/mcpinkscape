@@ -1,0 +1,45 @@
+# Python bytecode, virtual environments, package builds, and test caches
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.Python
+.venv/
+venv/
+build/
+dist/*
+!dist/.gitkeep
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local planning, test evidence, and manually opened live-test fixture
+DESIGN.md
+GOAL.md
+STATUS.md
+TESTING.md
+live_bridge_smoke.svg
+
+# Local server state and generated drawing outputs
+mcpinkscape-library/
+snapshots/
+*.png
+*.pdf
+
+# Native bridge build products
+native_bridge/build/
+native_bridge/*.so
+native_bridge/*.dylib
+native_bridge/*.dll
+native_bridge/*.lib
+native_bridge/*.exp
+
+# Editor and operating-system state
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

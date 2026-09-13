@@ -1,0 +1,4 @@
+share/inkscape/extensions/libmcpinkscape_bridge.so
+share/inkscape/extensions/mcpinkscape-bridge-start.inx
+share/inkscape/extensions/mcpinkscape-bridge-status.inx
+share/inkscape/extensions/mcpinkscape-bridge-stop.inx

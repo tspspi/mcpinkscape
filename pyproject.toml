@@ -1,0 +1,62 @@
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+    "setuptools-git-versioning",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpinkscape"
+dynamic = ["version"]
+description = "MCP server for offline and live Inkscape documents"
+authors = [
+    {name = "Thomas Spielauer", email = "pypipackages01@tspi.at"},
+]
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.md"]
+requires-python = ">=3.11"
+keywords = ["inkscape", "mcp", "model-context-protocol", "svg", "vector-graphics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: FreeBSD",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: Editors :: Vector-Based",
+]
+dependencies = [
+    "fastmcp>=4.0.0,<5.0.0",
+    "mcp>=2.0.0,<3.0.0",
+    "pydantic>=2.5.0",
+    "argon2-cffi>=23.1.0",
+]
+
+[project.optional-dependencies]
+remote = [
+    "fastapi>=0.141.1,<1",
+    "uvicorn>=0.24.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+mcpinkscape = "mcpinkscape.app.server:run_mcp_server"
+
+[tool.setuptools-git-versioning]
+enabled = true
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

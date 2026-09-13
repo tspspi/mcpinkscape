@@ -1,0 +1,6 @@
+Source-overlay integration for the native mcpinkscape Inkscape extension.
+
+The loaded bridge is built with the matching Inkscape source tree and private
+inkscape_base ABI. It provides a local, per-user bridge for the mcpinkscape
+Python MCP server; it is not a network service and is not independently ABI
+stable.

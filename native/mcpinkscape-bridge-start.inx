@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+    <_name>Start MCP Inkscape Bridge</_name>
+    <id>org.mcpinkscape.bridge.start</id>
+    <effect needs-document="false" needs-live-preview="false">
+        <effects-menu><submenu _name="Extensions"><submenu _name="MCP Inkscape" /></submenu></effects-menu>
+        <_menu-tip>Start the local MCP Inkscape bridge</_menu-tip>
+    </effect>
+    <plugin name="libmcpinkscape_bridge" />
+</inkscape-extension>
