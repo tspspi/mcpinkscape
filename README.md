@@ -20,6 +20,8 @@ extension is optional and its ABI must exactly match Inkscape.
 * There is an accompanying [blog article about this project](https://www.tspi.at/2026/09/13/llminkscape.html)
 * [Demonstration of the first run on YouTube](https://www.youtube.com/watch?v=i3NMtjDiHq0)
 
+![](https://raw.githubusercontent.com/tspspi/mcpinkscape/refs/heads/master/doc/mcpinkscape-pastel-A0-preview.jpg)
+
 ## Features
 
 - offline SVG document lifecycle, layers, object inspection, selection, and
