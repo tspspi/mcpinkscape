@@ -17,6 +17,9 @@ the RC1 native workflow is live-tested against an ABI-matched FreeBSD Inkscape
 1.4.4 fixture. Native capabilities remain dynamically advertised because the
 extension is optional and its ABI must exactly match Inkscape.
 
+* There is an accompanying [blog article about this project](https://www.tspi.at/2026/09/13/llminkscape.html)
+* [Demonstration of the first run on YouTube](https://www.youtube.com/watch?v=i3NMtjDiHq0)
+
 ## Features
 
 - offline SVG document lifecycle, layers, object inspection, selection, and
