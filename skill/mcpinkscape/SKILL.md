@@ -1,6 +1,6 @@
 ---
 name: mcpinkscape
-description: Create, inspect, edit, render, and verify SVG/Inkscape drawings through the mcpInkscape MCP server. Use for offline SVG work or collaborative editing of a local running Inkscape instance; do not use for arbitrary shell execution or non-SVG design tools.
+description: Create, inspect, edit, render, verify, and design SVG/Inkscape communications through the mcpInkscape MCP server. Use for posters, scientific figures, brochures, and offline or collaborative local Inkscape work; do not use for arbitrary shell execution or non-SVG design tools.
 ---
 
 # mcpInkscape
@@ -9,6 +9,14 @@ Use this skill when a task involves drawing or editing an SVG through the
 mcpInkscape MCP server. Prefer its typed tools over raw SVG text or arbitrary
 Inkscape actions, so the document remains inspectable and edits are
 collaboration-safe.
+
+For a communication-design task, begin by identifying the intended reader,
+format, main message, required facts, and delivery stage. Read
+[the Inkscape design guide](references/design-for-inkscape.md) before creating
+a substantial poster, scientific figure/poster, leaflet, brochure, presentation
+folder, or digital companion. Read [the delivery and review guide](references/design-review.md)
+when preparing an export, assessing a render, or discussing print readiness,
+accessibility, or a final handoff.
 
 ## Choose a backend
 
@@ -28,8 +36,23 @@ collaboration-safe.
 3. Apply `set_fill`, `set_stroke`, `set_opacity`, `set_text`, and the transform
    tools (`move_objects`, `rotate_objects`, `scale_objects`) with the latest
    `expected_revision` whenever another editor may be collaborating.
-4. Render `render_snapshot`, inspect or retrieve it with
-   `get_snapshot_base64`, and save/export only after the result is accepted.
+4. Treat graphical feedback as required: after every consequential layout,
+   typography, figure, style, or transform change, call `render_snapshot` and
+   inspect or retrieve it with `get_snapshot_base64`. Save/export only after
+   the rendered document result is accepted.
+
+For a substantial design, work in this order:
+
+1. Record confirmed constraints separately from assumptions. Establish the
+   reader's task and one primary takeaway before choosing a layout.
+2. Create a page and named layers for structure, content, figures, and any
+   temporary construction geometry. Use a content-led composition rather than
+   treating a favorite card, grid, or colour scheme as a default style.
+3. Render early at page and detail scale. Diagnose a concrete reader failure
+   (for example, unclear takeaway, unreadable figure label, or hidden fold
+   content), make one targeted revision, and render again.
+4. Keep a delivery status appropriate to the evidence: a useful concept is not
+   automatically print-ready, accessible, or physically proofed.
 
 For active Inkscape work, explicitly select known IDs with `live_select`, make
 one narrowly scoped `live_set_style` or transform operation, then use
