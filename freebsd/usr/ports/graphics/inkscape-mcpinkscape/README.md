@@ -1,33 +1,35 @@
-# `inkscape-mcpinkscape` ports overlay
+# Inkscape with the native mcpInkscape bridge
 
-This directory is intended to be copied beneath a FreeBSD ports tree as
-`graphics/inkscape-mcpinkscape`. It describes the native bridge portion of the
-`mcpinkscape` distribution. The Python MCP server itself is packaged from its
-own Python distribution; the bridge must be built with the matching
-`graphics/inkscape` work tree.
+Copy this complete directory, including `native/`, into the ports tree as
+`graphics/inkscape-mcpinkscape`, then run:
 
-It is intentionally not a standalone port. An installed `inkscape` package
-does not provide the private headers or a supported third-party ABI for
-`libinkscape_base`, so a companion port that merely declares `RUN_DEPENDS` on
-Inkscape would produce an unsafe binary.
+```sh
+make -C /usr/ports/graphics/inkscape-mcpinkscape install
+```
 
-## Integration procedure
+This is a local slave port of `graphics/inkscape`. It inherits the parent
+source archive, patches, options, dependencies, and package list, builds in
+its own work directory, and adds the native bridge through the CMake overlay.
+You do not edit the parent port, copy libraries manually, or set runtime
+resource environment variables. The supported parent source version is 1.4.4;
+an unsupported parent version fails explicitly.
 
-1. Copy this directory into the ports tree next to `graphics/inkscape`.
-2. In the matching Inkscape port Makefile, include
-   `../inkscape-mcpinkscape/files/inkscape-mcpinkscape.mk` before
-   `.include <bsd.port.mk>`.
-3. Set `MCPINKSCAPE_OVERLAY_DIR` to the `native/` directory from the exact
-   `mcpinkscape` release source used for the Python package build.
-4. Add the entries from `pkg-plist.bridge` to the Inkscape package plist (or
-   to its coordinated bridge subpackage plist).
-5. Build and package Inkscape and the bridge from the same patched work tree.
+The resulting `inkscape-mcpinkscape` package contains both Inkscape and its
+matching bridge. It owns the ordinary Inkscape installation paths and conflicts
+with the ordinary `inkscape` package. Use the normal ports/pkg replacement
+procedure when switching variants; this port does not forcibly remove an
+existing package. `pkg delete inkscape-mcpinkscape` removes the combined package.
 
-The overlay configures the additional CMake target, builds it after the normal
-Inkscape build, and stages the shared library with the three extension
-descriptors. It does not enable the per-user bridge listener: the user starts
-that explicitly from Inkscape.
+The Python MCP server is installed and configured separately. Installation
+does not start the bridge listener. Start it explicitly from Inkscape's
+Extensions menu when needed.
 
-The staged bridge is valid only for the exact Inkscape source revision, port
-patch set, compiler configuration, and `inkscape_base` ABI used for its build.
-Rebuild it whenever the Inkscape package changes.
+For package maintenance, use the usual `make stage`, `make check-plist`, and
+`make package` targets. Test the staged/installed application, including actual
+live editing, before distributing a binary. Version equality by itself does
+not prove ABI compatibility.
+
+The `native/` payload is generated from the main repository by
+`python3 packaging/export_freebsd_port.py`. Its manifest records the source
+hashes and base Git revision. Maintainers refresh it when the bridge changes;
+end users need no additional source checkout or export command.

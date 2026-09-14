@@ -1,6 +1,5 @@
-Source-overlay integration for the native mcpinkscape Inkscape extension.
+Inkscape SVG editor with an ABI-matched native mcpInkscape bridge.
 
-The loaded bridge is built with the matching Inkscape source tree and private
-inkscape_base ABI. It provides a local, per-user bridge for the mcpinkscape
-Python MCP server; it is not a network service and is not independently ABI
-stable.
+The editor and bridge are built together using the graphics/inkscape recipe.
+The bridge provides explicit Start/Stop/Status actions and local, per-user
+live document editing for the separately installed mcpInkscape Python server.

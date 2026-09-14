@@ -1,50 +1,29 @@
-# FreeBSD port-overlay plan
+# FreeBSD native application port
 
-`libmcpinkscape_bridge.so` is a separately installable loaded Inkscape
-extension, but it is not a standalone library. It uses private Inkscape C++
-headers and `libinkscape_base` ABI, neither of which an installed `inkscape`
-package exposes for third-party compilation. A conventional port containing
-only `RUN_DEPENDS=inkscape` is therefore invalid.
+The former manual integration fragment has been replaced by a self-contained
+local slave port at
+[`usr/ports/graphics/inkscape-mcpinkscape`](usr/ports/graphics/inkscape-mcpinkscape/README.md).
+Copy that complete directory into a ports tree and run `make install` there.
 
-## Preferred package shape
+The port reuses the `graphics/inkscape` recipe while adding the native CMake
+overlay. It builds Inkscape and the bridge in the same new work tree and
+packages them together. There is no dependency on an existing Inkscape work
+directory or on private headers from an installed package. The current source
+version admission is 1.4.4.
 
-Build the bridge as an Inkscape port overlay or subpackage from the exact same
-source tree and CMake build directory as `graphics/inkscape`.
+Native library/descriptors, installed library lookup, license, and native build
+metadata are owned by `native/CMakeLists.txt`, shared with the other platform
+builds. The port adds the corresponding package-list entries and captures its
+parent recipe, patch hashes, source checksum, selected options, and bridge
+revision/hashes in `share/inkscape/mcpinkscape/port-inputs.json`. It rejects
+recipe or patch changes after configuration and input changes during a build.
+Installation leaves the bridge listener off.
 
-1. During the Inkscape CMake configure, set
-   `CMAKE_PROJECT_TOP_LEVEL_INCLUDES` to
-   `mcpInkscape/native/cmake-overlay.cmake` and
-   `MCPINKSCAPE_OVERLAY_DIR` to `mcpInkscape/native`.
-2. Add `mcpinkscape_bridge` to the port's post-build target list. The target
-   links its sibling `inkscape_base`; it must never link an arbitrary installed
-   library by filename.
-3. Stage the shared library and the three `.inx` descriptors together under
-   `${PREFIX}/share/inkscape/extensions/`. Inkscape then discovers the module
-   for every user; its runtime UDS is still per-user below
-   `~/.local/state/mcpinkscape/`.
-4. Package this staged set as an `inkscape-mcpinkscape-bridge` subpackage (or a
-   coordinated companion port) with an exact dependency on the matching
-   Inkscape package version/ABI. Package upgrades must rebuild both from the
-   same port work tree.
+The combined package replaces the ordinary Inkscape package through the normal
+package-management procedure because both own the same paths. It is not a
+standalone plugin promised to work with arbitrary installed Inkscape builds.
 
-The current overlay was compiled and loaded from the local 1.4.4 port work
-tree. That is evidence for the integration mechanism, not a claim that its
-binary can load into a different installed Inkscape version.
+## Package maintenance
 
-## Port-maintainer acceptance checks
-
-- Build the normal Inkscape port with its ordinary patch set plus the overlay;
-  no bridge patch is copied into upstream source.
-- Confirm `libmcpinkscape_bridge.so` links to that build's `inkscape_base`.
-- With a temporary XDG config directory containing only the staged extension
-  files, confirm all three `org.mcpinkscape.bridge.*` actions appear in
-  `inkscape --action-list`.
-- Run the native bridge verification fixture for a GUI process from the same package.
-- Do not install the extension if the package's Inkscape ABI/source revision
-  differs from the build inputs.
-
-## Non-goals for RC1
-
-This is not a proposal to install private headers globally, turn the bridge
-into a remote service, or replace the optional offline/CLI MCP backends.
-Windows packaging is intentionally deferred.
+Use the usual `make stage`, `make check-plist`, and `make package` targets.
+See the [installation instructions](../INSTALL.md) for platform support and usage.

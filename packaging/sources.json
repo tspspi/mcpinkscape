@@ -1,0 +1,17 @@
+{
+  "inkscape": {
+    "version": "1.4.4",
+    "url": "https://media.inkscape.org/dl/resources/file/inkscape-1.4.4.tar.xz",
+    "sha256": "bbce5753a1e08b871a5cf16c665eb060700aaab9a6a379dc63f4c4d9b3b8856e",
+    "directory": "inkscape-1.4.4_2026-05-05_dcaf3e7d9e"
+  },
+  "msys2": {
+    "url": "https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-x86_64-20260611.exe",
+    "sha256": "3150d7d9aa5dedd900a7f52300d4d918271e3a8fc47de94848818fd5a430e6b0"
+  },
+  "linux": {
+    "distribution": "ubuntu",
+    "version": "26.04",
+    "architecture": "x86_64"
+  }
+}

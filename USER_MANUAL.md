@@ -38,7 +38,7 @@ available CLI fallback.
    embeds the verified image by default; it never exposes arbitrary file reads.
 7. Apply `move_objects`, `rotate_objects`, or `scale_objects`.
 8. Call `render_snapshot`; use `get_snapshot_base64` for a client that needs
-   the image bytes. Save or export only after visual acceptance.
+   the image bytes. Check the rendered result before saving or exporting.
 
 Use the revision returned by each mutation as `expected_revision` for the next
 edit when another editor or agent may change the same document. A revision

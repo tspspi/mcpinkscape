@@ -19,13 +19,18 @@ htmlcov/
 # Local planning, test evidence, and manually opened live-test fixture
 DESIGN.md
 GOAL.md
+INSTALL_GOAL.md
 STATUS.md
 TESTING.md
+/.agent-guides/
 live_bridge_smoke.svg
 
 # Local server state and generated drawing outputs
 mcpinkscape-library/
 snapshots/
+/poster/
+/poster2/
+/poster3/
 *.png
 *.pdf
 
@@ -36,6 +41,7 @@ native_bridge/*.dylib
 native_bridge/*.dll
 native_bridge/*.lib
 native_bridge/*.exp
+freebsd/usr/ports/graphics/inkscape-mcpinkscape/work*/
 
 # Editor and operating-system state
 .DS_Store

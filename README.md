@@ -234,6 +234,9 @@ public for local health checks; `/mcp` requires a configured API key.
 
 ## Native Extension
 
+For the automated native application build/install entry points, see
+[INSTALL.md](INSTALL.md), including supported platforms and current limitations.
+
 The `native/` directory is an Inkscape-source-overlay target, not an independent
 binary build. It needs the exact matching Inkscape source, build headers,
 compiler, and `inkscape_base` ABI. It supplies Start, Stop, and Status entries
