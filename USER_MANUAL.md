@@ -151,6 +151,36 @@ the destination require `expected_revision`. Setting the destination preserves
 the selection and does not create an SVG edit or undo entry. Inspect and render
 the result with the same document target.
 
+For an edit sequence that must succeed together, use native `live_apply_batch`.
+Supply both document target IDs, the current `expected_revision`, and 1–100 typed
+`operations` within a 256 KiB request. Each entry has a `method` and typed `params`.
+For example:
+
+```json
+[
+  {"method": "shape.create", "params": {"kind": "rectangle", "object_id": "panel", "values": {"x": 10, "y": 10, "width": 40, "height": 20}}},
+  {"method": "object.set_style", "params": {"object_ids": ["panel"], "style": {"fill": "#336699"}}},
+  {"method": "object.move", "params": {"object_ids": ["panel"], "dx": 5, "dy": 0}}
+]
+```
+
+Creation needs explicit IDs so later operations can refer to them. The whole
+sequence is validated before the live edit begins. A successful batch returns one
+new revision, ordered operation receipts, and affected stable IDs; it takes one
+undo step when `changed` is true. A no-op reports `changed: false` and preserves
+revision and undo/redo history. Surviving selections and the current destination layer are preserved.
+A validation error leaves the document untouched. A reported execution error rolls
+back changes, selection, modified state, and revision without clearing existing
+redo history. If the batch deletes the destination layer, the root becomes the
+new destination.
+
+Batches support native shape/text/layer creation, text/style changes, transforms,
+delete/group/ungroup/stacking, gradients, and page background. Image import,
+duplication, selection, and choosing the destination layer remain separate tools.
+See [the batch protocol](native/ATOMIC_BATCHES.md) for the supported method names.
+Never replay a batch after a timeout or lost response: inspect the same target
+and revision first, because it may already have committed.
+
 For the CLI backend, use this bounded pattern:
 
 1. `live_status` to inspect advertised Inkscape actions.

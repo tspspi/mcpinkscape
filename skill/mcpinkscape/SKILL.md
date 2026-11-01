@@ -62,6 +62,22 @@ Pass `layer_id` when creating shapes/text, or set the default with
 image import and does not clear the current selection. Keep using the explicit
 document target for inspection, drawing, and rendered checks.
 
+Use native `live_apply_batch` when a sequence of typed edits must succeed
+atomically. Supply an explicit document target, one observed revision, and
+1–100 operations within 256 KiB. Give newly created objects explicit IDs so later
+operations can refer to them. The sequence is prevalidated and a successful
+batch with changes produces one revision and one undo step, with ordered receipts
+and affected IDs. A no-op reports `changed: false` without advancing revision or
+changing undo/redo history. Check those receipts, then render the same document.
+
+Validation errors leave live state untouched; reported execution errors roll
+back document changes, selection, modified flags, and revision while retaining
+existing redo history. Inspect before correcting a failed batch. If the response
+is lost, do not replay: first determine whether the batch committed. Image
+import, duplication, selection, and destination-layer changes remain standalone
+calls. A batch preserves surviving selected IDs and an existing destination layer;
+if it deletes that layer, the destination becomes the root.
+
 ## Working method
 
 1. Call `server_status`, then create/open a document and inspect its revision.

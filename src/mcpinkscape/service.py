@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import tempfile
@@ -10,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from mcpinkscape.batches import BatchOperations, validate_operations
 from mcpinkscape.config.schema import AccessConfig, BridgeConfig
 from mcpinkscape.application import InkscapeApplication
 from mcpinkscape.errors import (
@@ -30,6 +32,7 @@ from mcpinkscape.svg_document import SVGDocument
 # names next to the service routes so dynamic tool discovery cannot drift from
 # the request implementation.
 NATIVE_TOOL_METHODS: dict[str, str] = {
+    "live_apply_batch": "document.batch",
     "live_get_document_info": "document.info",
     "live_get_object": "object.inspect",
     "live_list_layers": "layer.list",
@@ -569,6 +572,19 @@ class InkscapeService:
             finally:
                 temporary_svg.unlink(missing_ok = True)
         return {"document_id": document_id, "path": str(destination.relative_to(self.document_root.root)), "mime_type": {"svg": "image/svg+xml", "plain-svg": "image/svg+xml", "png": "image/png", "pdf": "application/pdf"}[export_type], "revision": document.revision}
+
+    def live_apply_batch(self, operations: BatchOperations, instance_id: str, document_id: str, expected_revision: int) -> dict[str, Any]:
+        target = self._document_target(instance_id, document_id)
+        if target is None or isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or not 0 <= expected_revision <= 9007199254740991:
+            raise InvalidDrawingValueError("batch requires an explicit native target and non-negative integer expected_revision")
+        normalized = validate_operations(operations)
+        envelope = {"type": "request", "protocol_version": 1, "id": "0" * 32,
+                    "method": "document.batch", "params": {"operations": normalized},
+                    "target": target, "expected_revision": expected_revision}
+        if len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()) > 256 * 1024:
+            raise InvalidDrawingValueError("batch request exceeds 256 KiB")
+        return {"backend": "native_uds", **self._native_request("document.batch", {"operations": normalized}, expected_revision,
+                instance_id=instance_id, document_id=document_id)}
 
     def live_get_document_info(self, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         return {"backend": "native_uds", **self._native_request("document.info", {}, instance_id=instance_id, document_id=document_id)}

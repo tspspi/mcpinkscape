@@ -41,3 +41,11 @@ class LiveActionUnsupportedError(InkscapeMCPError):
 
 class RendererError(InkscapeMCPError):
     code = "renderer_failed"
+
+
+class BatchValidationError(InkscapeMCPError):
+    code = "batch_validation_failed"
+
+
+class BatchExecutionError(InkscapeMCPError):
+    code = "batch_execution_failed"

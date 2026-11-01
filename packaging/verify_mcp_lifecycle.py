@@ -140,6 +140,8 @@ asyncio.run(run())
             await client.call_tool("create_document", {"name": "offline-before-gui"})
             unavailable = await client.call_tool("live_list_objects", {}, raise_on_error=False)
             require(unavailable.is_error, "Live call unexpectedly succeeded without GUI")
+            from verify_batches import verify_batches
+            batch_checks = await verify_batches(client, state, env, activate)
             from verify_live_inspection import verify_live_inspection
             inspection_checks = await verify_live_inspection(client, state)
             from verify_document_targets import verify_document_targets
@@ -255,7 +257,7 @@ asyncio.run(run())
             activate("quit-immediate")
             require(application.wait(timeout=15) == 0, "Relaunched GUI did not exit normally")
             application = None
-        return {"live_inspection": inspection_checks, "document_targeting": target_checks, "mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
+        return {"atomic_batches": batch_checks, "live_inspection": inspection_checks, "document_targeting": target_checks, "mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
                 "automatic_startup": True, "stdio_fresh_start": True, "startup_document": True,
                 "automatic_bridge_activation": True, "gui_before_mcp": True,
                 "bridge_restart": True, "mcp_process_restart": True, "gui_crash_recovery": True,

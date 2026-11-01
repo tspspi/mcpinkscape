@@ -15,6 +15,7 @@ to its policy. This catalog describes the RC1 families.
 | Visual feedback and files | `render_snapshot`, `list_snapshots`, `get_snapshot_base64`, `export_document` |
 | Active window | `live_status`, `live_select`, `live_set_style`, `live_move`, `live_rotate`, `live_scale`, `live_render_snapshot`, and native-only `live_poll_changes` |
 | Native document targets | `live_list_documents`; pass its `instance_id` and `document_id` together to subsequent live tools |
+| Atomic native edits | `live_apply_batch` (explicit target/revision, 1–100 typed operations, 256 KiB, one undo step) |
 | Native inspection and layers | `live_get_document_info`, `live_get_object`, `live_list_layers`, `live_create_layer`, `live_set_current_layer` |
 | Native live drawing | `live_list_objects`, `live_create_shape`, `live_create_text`, `live_set_text`, `live_set_page_background`, `live_create_gradient`, `live_set_gradient_stops`, `live_apply_gradient`, `live_import_image`, `live_duplicate_objects`, `live_delete_objects`, `live_group_objects`, `live_ungroup_objects` (discoverable before connection in native/auto mode, then filtered by negotiated methods) |
 
@@ -55,3 +56,16 @@ For collaborative work, retain both values returned by `live_poll_changes`:
 `revision` for document mutations and `selection_generation` for selection
 changes. Poll before a consequential mutation; if either changed unexpectedly,
 inspect the live document rather than replaying a stale edit.
+
+Native batch entries use `{method, params}` with the supported protocol method
+names: `shape.create`, `text.create`, `text.set`, `layer.create`,
+`object.set_style`, `object.move`, `object.rotate`, `object.scale`, `object.delete`,
+`object.group`, `object.ungroup`, `object.raise`, `object.lower`, `gradient.create`,
+`gradient.set_stops`, `gradient.apply`, and `document.set_background`. Supply
+explicit IDs for creation. Style keys use the typed tool names (for example,
+`font_size`, `stroke_width`), rather than raw CSS field names. Batch requests
+cannot change targets/revisions per entry or invoke arbitrary methods/actions.
+Each batch with edits has one revision and one undo entry; no-op batches retain
+revision and undo/redo history. inspect the returned
+operation receipts and render before accepting the result. On transport loss,
+inspect state rather than replaying the batch.

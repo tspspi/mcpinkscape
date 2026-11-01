@@ -66,6 +66,11 @@
 #include "style.h"
 #include "text-editing.h"
 #include "xml/attribute-record.h"
+#include "xml/node-observer.h"
+#include "xml/log-builder.h"
+#include "xml/event-fns.h"
+#include <stdexcept>
+#include <set>
 #include "selection.h"
 #include "xml/document.h"
 #include "xml/node.h"
@@ -148,6 +153,93 @@ thread_local SPDesktop *executing_desktop = nullptr;
 
 SPDesktop *request_desktop() { return executing_desktop; }
 
+// Only the GUI callback installs a batch context. Nested typed mutations reuse
+// their normal validators but defer undo/revision commits to the outer batch.
+thread_local SPDocument *batch_document = nullptr;
+thread_local std::string batch_default_layer_id;
+SPDocument *request_document() { return batch_document ? batch_document : (request_desktop() ? request_desktop()->getDocument() : nullptr); }
+
+std::string json_value(mcpinkscape::json::Value const &value)
+{
+    using Type = mcpinkscape::json::Value::Type;
+    switch (value.type) {
+        case Type::null: return "null";
+        case Type::boolean: return value.boolean ? "true" : "false";
+        case Type::number: {
+            char buffer[G_ASCII_DTOSTR_BUF_SIZE];
+            return g_ascii_dtostr(buffer, sizeof(buffer), value.number);
+        }
+        case Type::string: return json_string(value.string);
+        case Type::array: {
+            std::string result = "[";
+            for (auto const &item : value.array) { if (result.size() > 1) result += ","; result += json_value(item); }
+            return result + "]";
+        }
+        case Type::object: {
+            std::string result = "{";
+            for (auto const &[key, item] : value.object) { if (result.size() > 1) result += ","; result += json_string(key) + ":" + json_value(item); }
+            return result + "}";
+        }
+    }
+    return "null";
+}
+
+std::string xml_fingerprint(Inkscape::XML::Node const *root)
+{
+    auto *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    auto append = [checksum](std::string const &value) {
+        auto const size = static_cast<std::uint64_t>(value.size());
+        g_checksum_update(checksum, reinterpret_cast<guchar const *>(&size), sizeof(size));
+        g_checksum_update(checksum, reinterpret_cast<guchar const *>(value.data()), value.size());
+    };
+    std::function<void(Inkscape::XML::Node const *)> visit = [&](auto const *node) {
+        append(std::to_string(static_cast<unsigned>(node->type())));
+        append(node->name() ? node->name() : "");
+        append(node->content() ? node->content() : "");
+        std::map<std::string, std::string> attributes;
+        for (auto const &attribute : node->attributeList()) attributes.emplace(g_quark_to_string(attribute.key), attribute.value.pointer());
+        append(std::to_string(attributes.size()));
+        for (auto const &[name, value] : attributes) { append(name); append(value); }
+        unsigned children = 0;
+        for (auto const *child = node->firstChild(); child; child = child->next()) ++children;
+        append(std::to_string(children));
+        for (auto const *child = node->firstChild(); child; child = child->next()) visit(child);
+    };
+    visit(root);
+    std::string result = g_checksum_get_string(checksum);
+    g_checksum_free(checksum);
+    return result;
+}
+
+std::string response_for_request_impl(std::string const &line);
+
+class BatchJournal final : public Inkscape::XML::NodeObserver {
+public:
+    explicit BatchJournal(Inkscape::XML::Node *root) : _root(root) { _root->addSubtreeObserver(*this); }
+    ~BatchJournal() override { stop(); if (_log) sp_repr_free_log(_log); }
+    void stop() {
+        if (_root) {
+            _root->removeSubtreeObserver(*this);
+            _root = nullptr;
+            _log = _builder.detach();
+        }
+    }
+    void rollback() {
+        stop();
+        if (_log) { sp_repr_undo_log(_log); sp_repr_free_log(_log); _log = nullptr; }
+    }
+    void notifyChildAdded(Inkscape::XML::Node &n, Inkscape::XML::Node &c, Inkscape::XML::Node *p) override { _builder.addChild(n,c,p); }
+    void notifyChildRemoved(Inkscape::XML::Node &n, Inkscape::XML::Node &c, Inkscape::XML::Node *p) override { _builder.removeChild(n,c,p); }
+    void notifyChildOrderChanged(Inkscape::XML::Node &n, Inkscape::XML::Node &c, Inkscape::XML::Node *a, Inkscape::XML::Node *b) override { _builder.setChildOrder(n,c,a,b); }
+    void notifyContentChanged(Inkscape::XML::Node &n, Inkscape::Util::ptr_shared a, Inkscape::Util::ptr_shared b) override { _builder.setContent(n,a,b); }
+    void notifyAttributeChanged(Inkscape::XML::Node &n, GQuark k, Inkscape::Util::ptr_shared a, Inkscape::Util::ptr_shared b) override { _builder.setAttribute(n,k,a,b); }
+    void notifyElementNameChanged(Inkscape::XML::Node &n, GQuark a, GQuark b) override { _builder.setElementName(n,a,b); }
+private:
+    Inkscape::XML::Node *_root;
+    Inkscape::XML::LogBuilder _builder;
+    Inkscape::XML::Event *_log = nullptr;
+};
+
 bool document_method(std::string const &method)
 {
     return (method.starts_with("document.") && method != "document.list") ||
@@ -176,6 +268,184 @@ struct GradientStop {
 
 class GuiExecutor final {
 public:
+    std::optional<std::string> apply_batch(std::vector<std::string> requests, std::uint64_t expected_revision)
+    {
+        return execute([this, requests = std::move(requests), expected_revision] {
+            auto *desktop = request_desktop();
+            auto *document = request_document();
+            if (!desktop || !document) return std::string("{\"state\":\"no_document\"}");
+            if (_revisions[document] != expected_revision) return "{\"state\":\"revision_conflict\",\"revision\":" + std::to_string(_revisions[document]) + "}";
+            document->ensureUpToDate();
+            auto *initial_layer = desktop->layerManager().currentLayer();
+            std::string const layer_id = initial_layer && initial_layer->getId() ? initial_layer->getId() : "";
+            auto selection_ids = [desktop] {
+                std::vector<std::string> ids;
+                for (auto *object : desktop->getSelection()->objects()) if (object->getId()) ids.emplace_back(object->getId());
+                return ids;
+            };
+            auto const selected = selection_ids();
+            auto const generation = _selection_generations[document];
+            auto const modified = document->isModifiedSinceSave();
+            auto const virgin = document->getVirgin();
+            auto const autosave_modified = document->isModifiedSinceAutoSave();
+            BridgeMutation mutation(*this, document);
+            struct Context {
+                SPDocument *previous_document = batch_document;
+                std::string previous_layer = batch_default_layer_id;
+                std::optional<DocumentTarget> previous_target = requested_target;
+                std::string previous_method = requested_method;
+                ~Context() {
+                    batch_document = previous_document;
+                    batch_default_layer_id = previous_layer;
+                    requested_target = previous_target;
+                    requested_method = previous_method;
+                }
+            } context;
+            auto failure = [](char const *code, std::size_t index, std::string const &message) {
+                return std::string("{\"error\":{\"code\":") + json_string(code) + ",\"operation_index\":" + std::to_string(index) +
+                    ",\"message\":" + json_string("batch operation " + std::to_string(index) + ": " + message) + "}}";
+            };
+            auto apply = [](std::string const &request) {
+                std::string parse_error;
+                auto input = mcpinkscape::json::Parser(request).parse(parse_error);
+                auto const method = input->get("method")->string;
+                auto const *params = input->get("params");
+                if (auto const *ids = params->get("object_ids"); ids && ids->type == mcpinkscape::json::Value::Type::array) {
+                    std::set<std::string> seen;
+                    std::vector<SPObject *> targets;
+                    for (auto const &id : ids->array) {
+                        if (id.type != mcpinkscape::json::Value::Type::string) continue;
+                        if (!seen.insert(id.string).second) throw std::runtime_error("object_ids contains duplicates");
+                        auto *object = request_document()->getObjectById(id.string);
+                        bool const destructive = method == "object.delete" || method == "object.group" || method == "object.raise" || method == "object.lower";
+                        if (object && destructive && (object == request_document()->getRoot() || !dynamic_cast<SPItem *>(object))) {
+                            throw std::runtime_error("batch structural edits require drawable objects below the SVG root");
+                        }
+                        if (object && method == "object.delete") {
+                            for (auto *prior : targets) if (prior->isAncestorOf(object) || object->isAncestorOf(prior)) {
+                                throw std::runtime_error("delete targets must not overlap through ancestry");
+                            }
+                            targets.push_back(object);
+                        }
+                    }
+                }
+                auto wire = response_for_request_impl(request);
+                std::string error;
+                auto response = mcpinkscape::json::Parser(wire).parse(error);
+                auto const *ok = response ? response->get("ok") : nullptr;
+                if (!ok || !ok->boolean) {
+                    auto const *detail = response && response->get("error") ? response->get("error")->get("message") : nullptr;
+                    throw std::runtime_error(detail ? detail->string : "invalid mutation response");
+                }
+                auto const *result = response->get("result");
+                if (!result || result->type != mcpinkscape::json::Value::Type::object || result->get("state")) throw std::runtime_error("mutation did not complete");
+                auto value = *result;
+                value.object.erase("revision");
+                std::set<std::string> affected;
+                for (auto const *name : {"changed_ids", "created_ids", "deleted_ids"}) {
+                    if (auto const *ids = value.get(name)) for (auto const &id : ids->array) affected.insert(id.string);
+                }
+                if (auto const *ids = params->get("object_ids")) for (auto const &id : ids->array) affected.insert(id.string);
+                for (auto const *name : {"object_id", "group_id", "gradient_id", "layer_id"}) {
+                    if (auto const *id = params->get(name); id && id->type == mcpinkscape::json::Value::Type::string) affected.insert(id->string);
+                }
+                mcpinkscape::json::Value ids;
+                ids.type = mcpinkscape::json::Value::Type::array;
+                for (auto const &id : affected) {
+                    mcpinkscape::json::Value entry;
+                    entry.type = mcpinkscape::json::Value::Type::string;
+                    entry.string = id;
+                    ids.array.push_back(std::move(entry));
+                }
+                value.object["affected_ids"] = std::move(ids);
+                return value;
+            };
+            std::size_t index = 0;
+            // A detached copy exercises every operation, including references to
+            // objects created earlier in this batch, before any live XML edit.
+            {
+                auto copy = document->copy();
+                batch_document = copy.get();
+                batch_default_layer_id = layer_id;
+                _revisions[copy.get()] = expected_revision;
+                try {
+                    for (index = 0; index < requests.size(); ++index) apply(requests[index]);
+                    copy->ensureUpToDate();
+                } catch (std::exception const &error) {
+                    _revisions.erase(copy.get());
+                    batch_document = nullptr;
+                    return failure("batch_validation_failed", index, error.what());
+                }
+                _revisions.erase(copy.get());
+                batch_document = nullptr;
+            }
+            batch_document = document;
+            batch_default_layer_id = layer_id;
+            auto restore_selection_and_layer = [&] {
+                std::vector<SPObject *> objects;
+                for (auto const &id : selected) if (auto *object = document->getObjectById(id)) objects.push_back(object);
+                desktop->getSelection()->setList(objects);
+                if (layer_id.empty()) desktop->layerManager().setCurrentLayer(document->getRoot());
+                else if (auto *layer = document->getObjectById(layer_id)) desktop->layerManager().setCurrentLayer(layer);
+                else desktop->layerManager().setCurrentLayer(document->getRoot());
+            };
+            auto const original_xml = xml_fingerprint(document->getReprRoot());
+            BatchJournal journal(document->getReprRoot());
+            std::string results = "[";
+            std::set<std::string> affected;
+            try {
+                for (index = 0; index < requests.size(); ++index) {
+                    auto result = apply(requests[index]);
+                    for (auto const *name : {"affected_ids"}) {
+                        if (auto const *ids = result.get(name)) for (auto const &id : ids->array) affected.insert(id.string);
+                    }
+                    if (index) results += ",";
+                    results += json_value(result);
+                    // Local-only fault injection for the disposable GUI tests.
+                    // There is no request parameter or MCP tool for enabling it.
+                    auto const *fault = g_getenv("MCPINKSCAPE_TEST_BATCH_FAIL_AFTER");
+                    if (fault && std::to_string(index + 1) == fault) throw std::runtime_error("injected execution failure");
+                }
+                document->ensureUpToDate();
+                restore_selection_and_layer();
+                document->ensureUpToDate();
+            } catch (std::exception const &error) {
+                journal.rollback();
+                document->ensureUpToDate();
+                restore_selection_and_layer();
+                document->ensureUpToDate();
+                document->setModifiedSinceSave(modified);
+                if (!autosave_modified) document->setModifiedSinceAutoSaveFalse();
+                document->setVirgin(virgin);
+                _revisions[document] = expected_revision;
+                _selection_generations[document] = generation;
+                return failure("batch_execution_failed", index, std::string(error.what()) + "; changes rolled back");
+            }
+            bool const changed = xml_fingerprint(document->getReprRoot()) != original_xml;
+            if (!changed) {
+                // XML setters may record equal old/new values. Undo those
+                // events without clearing the pre-existing redo stack.
+                journal.rollback();
+                document->ensureUpToDate();
+                restore_selection_and_layer();
+                document->setModifiedSinceSave(modified);
+                if (!autosave_modified) document->setModifiedSinceAutoSaveFalse();
+                document->setVirgin(virgin);
+            } else {
+                journal.stop();
+            }
+            // A no-op must not call done(): Inkscape clears redo even when the
+            // XML transaction is empty. Actual changes commit exactly once.
+            if (changed) Inkscape::DocumentUndo::done(document, "MCP edit batch", "");
+            _revisions[document] = expected_revision + (changed ? 1 : 0);
+            _selection_generations[document] = generation + (selection_ids() != selected ? 1 : 0);
+            std::string ids = "[";
+            for (auto const &id : affected) { if (ids.size() > 1) ids += ","; ids += json_string(id); }
+            return "{\"changed\":" + std::string(changed ? "true" : "false") + ",\"revision\":" + std::to_string(_revisions[document]) + ",\"affected_ids\":" + ids +
+                "],\"operation_results\":" + results + "],\"operation_count\":" + std::to_string(requests.size()) + "}";
+        });
+    }
+
     std::optional<std::string> document_list()
     {
         return execute([this] {
@@ -268,10 +538,10 @@ public:
     {
         return execute([this] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) {
+            if (!desktop || !request_document()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false}");
             }
-            auto *document = desktop->getDocument();
+            auto *document = request_document();
             auto const revision = current_revision(document, desktop->getSelection());
             return std::string("{\"document_id\":\"active\",\"open\":true,\"revision\":") +
                 std::to_string(revision) + "}";
@@ -282,10 +552,10 @@ public:
     {
         return execute([this, parent_id = std::move(parent_id), offset, limit] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) {
+            if (!desktop || !request_document()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"objects\":[]}");
             }
-            auto *document = desktop->getDocument();
+            auto *document = request_document();
             auto *parent = document->getReprRoot();
             if (parent_id) {
                 auto *parent_object = document->getObjectById(*parent_id);
@@ -367,8 +637,8 @@ public:
     {
         return execute([this] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             document->ensureUpToDate();
             auto *layer = desktop->layerManager().currentLayer();
             return "{\"revision\":" + std::to_string(_revisions[document]) + ",\"coordinates\":" + coordinate_json(document) +
@@ -387,8 +657,8 @@ public:
     {
         return execute([this, object_id = std::move(object_id)] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             document->ensureUpToDate();
             auto *object = document->getObjectById(object_id);
             if (!object) return std::string("{\"state\":\"object_not_found\"}");
@@ -444,8 +714,8 @@ public:
     {
         return execute([this, offset, limit] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             document->ensureUpToDate();
             std::size_t seen = 0, emitted = 0;
             std::string result = "[";
@@ -480,8 +750,8 @@ public:
     {
         return execute([this, layer_id = std::move(layer_id), label = std::move(label), parent_id = std::move(parent_id), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return "{\"state\":\"revision_conflict\",\"revision\":" + std::to_string(_revisions[document]) + "}";
             if (document->getObjectById(layer_id)) return std::string("{\"state\":\"duplicate_id\"}");
             SPObject *parent = document->getRoot();
@@ -496,7 +766,7 @@ public:
             repr->setAttribute("inkscape:label", label.c_str());
             parent->appendChildRepr(repr);
             Inkscape::GC::release(repr);
-            Inkscape::DocumentUndo::done(document, "MCP create layer", "");
+            commit_mutation(document, "MCP create layer", "");
             return "{\"revision\":" + std::to_string(finish_bridge_mutation(document)) + ",\"changed_ids\":[" + json_string(layer_id) + "]}";
         });
     }
@@ -505,8 +775,8 @@ public:
     {
         return execute([this, layer_id = std::move(layer_id), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return "{\"state\":\"revision_conflict\",\"revision\":" + std::to_string(_revisions[document]) + "}";
             auto *layer = document->getObjectById(layer_id);
             if (!is_layer(layer)) return std::string("{\"state\":\"layer_not_found\"}");
@@ -519,7 +789,7 @@ public:
     {
         return execute([] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) {
+            if (!desktop || !request_document()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"object_ids\":[]}");
             }
             std::string ids = "[";
@@ -540,10 +810,10 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) {
+            if (!desktop || !request_document()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"object_ids\":[]}");
             }
-            auto *document = desktop->getDocument();
+            auto *document = request_document();
             if (expected_revision && _revisions[document] != *expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             }
@@ -569,8 +839,8 @@ public:
     {
         return execute([this, after_revision, after_selection_generation] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"document_id\":\"active\",\"open\":false}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"document_id\":\"active\",\"open\":false}");
+            auto *document = request_document();
             auto const revision = current_revision(document, desktop->getSelection());
             auto const selection_generation = _selection_generations[document];
             std::string ids = "[";
@@ -599,10 +869,10 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), style = std::move(style), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) {
+            if (!desktop || !request_document()) {
                 return std::string("{\"state\":\"no_document\"}");
             }
-            auto *document = desktop->getDocument();
+            auto *document = request_document();
             auto const current_revision = _revisions[document];
             if (current_revision != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") +
@@ -625,7 +895,7 @@ public:
                 sp_repr_css_change(object->getRepr(), css, "style");
                 sp_repr_css_attr_unref(css);
             }
-            Inkscape::DocumentUndo::done(document, "MCP set object style", "");
+            commit_mutation(document, "MCP set object style", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < object_ids.size(); ++index) {
@@ -651,8 +921,8 @@ public:
                         text = std::move(text), layer_id = std::move(layer_id), expected_revision,
                         undo_label = std::move(undo_label)] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") +
                     std::to_string(_revisions[document]) + "}";
@@ -662,6 +932,7 @@ public:
                 return std::string("{\"state\":\"duplicate_id\"}");
             }
             SPObject *parent = desktop->layerManager().currentLayer();
+            if (batch_document) parent = batch_default_layer_id.empty() ? document->getRoot() : document->getObjectById(batch_default_layer_id);
             if (layer_id) {
                 parent = document->getObjectById(*layer_id);
                 if (!parent || !parent->getRepr() || std::string(parent->getRepr()->name()) != "svg:g") {
@@ -679,7 +950,7 @@ public:
             }
             parent->appendChildRepr(repr);
             Inkscape::GC::release(repr);
-            Inkscape::DocumentUndo::done(document, undo_label.c_str(), "");
+            commit_mutation(document, undo_label.c_str(), "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) +
                 ",\"changed_ids\":[" + json_string(id_it->second) + "]}";
@@ -694,8 +965,8 @@ public:
         return execute([this, object_ids = std::move(object_ids), transform_text = std::move(transform_text),
                         expected_revision, undo_label = std::move(undo_label)] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") +
                     std::to_string(_revisions[document]) + "}";
@@ -713,7 +984,7 @@ public:
                 auto const combined = transform_text + (existing && *existing ? " " + std::string(existing) : "");
                 object->getRepr()->setAttribute("transform", combined.c_str());
             }
-            Inkscape::DocumentUndo::done(document, undo_label.c_str(), "");
+            commit_mutation(document, undo_label.c_str(), "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < object_ids.size(); ++index) {
@@ -728,8 +999,8 @@ public:
     {
         return execute([this, object_id = std::move(object_id), text = std::move(text), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") +
                     std::to_string(_revisions[document]) + "}";
@@ -743,7 +1014,7 @@ public:
             }
             BridgeMutation mutation(*this, document);
             repr->firstChild()->setContent(text.c_str());
-            Inkscape::DocumentUndo::done(document, "MCP set text", "");
+            commit_mutation(document, "MCP set text", "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) +
                 ",\"changed_ids\":[" + json_string(object_id) + "]}";
@@ -754,8 +1025,8 @@ public:
     {
         return execute([this, color = std::move(color), opacity, expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") +
                     std::to_string(_revisions[document]) + "}";
@@ -767,7 +1038,7 @@ public:
             repr->setAttribute("pagecolor", color.c_str());
             auto opacity_text = std::to_string(opacity);
             repr->setAttribute("inkscape:pageopacity", opacity_text.c_str());
-            Inkscape::DocumentUndo::done(document, "MCP set page background", "");
+            commit_mutation(document, "MCP set page background", "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) + ",\"changed_ids\":[]}";
         });
@@ -781,8 +1052,8 @@ public:
         return execute([this, kind = std::move(kind), gradient_id = std::move(gradient_id),
                         geometry = std::move(geometry), stops = std::move(stops), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) {
                 return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             }
@@ -805,7 +1076,7 @@ public:
             }
             defs->appendChildRepr(gradient);
             Inkscape::GC::release(gradient);
-            Inkscape::DocumentUndo::done(document, "MCP create gradient", "");
+            commit_mutation(document, "MCP create gradient", "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) + ",\"changed_ids\":[" + json_string(gradient_id) + "]}";
         });
@@ -815,8 +1086,8 @@ public:
     {
         return execute([this, gradient_id = std::move(gradient_id), stops = std::move(stops), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             auto *object = document->getObjectById(gradient_id);
             auto *gradient = object ? object->getRepr() : nullptr;
@@ -836,7 +1107,7 @@ public:
                 gradient->appendChild(stop_repr);
                 Inkscape::GC::release(stop_repr);
             }
-            Inkscape::DocumentUndo::done(document, "MCP set gradient stops", "");
+            commit_mutation(document, "MCP set gradient stops", "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) + ",\"changed_ids\":[" + json_string(gradient_id) + "]}";
         });
@@ -846,8 +1117,8 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), gradient_id = std::move(gradient_id), target = std::move(target), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             auto *gradient_object = document->getObjectById(gradient_id);
             auto const *gradient_name = gradient_object && gradient_object->getRepr() ? gradient_object->getRepr()->name() : nullptr;
@@ -866,7 +1137,7 @@ public:
                 sp_repr_css_change(object->getRepr(), css, "style");
                 sp_repr_css_attr_unref(css);
             }
-            Inkscape::DocumentUndo::done(document, "MCP apply gradient", "");
+            commit_mutation(document, "MCP apply gradient", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < object_ids.size(); ++index) {
@@ -881,8 +1152,8 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             std::vector<Inkscape::XML::Node *> reprs;
             for (auto const &id : object_ids) {
@@ -893,7 +1164,7 @@ public:
             }
             BridgeMutation mutation(*this, document);
             for (auto *repr : reprs) repr->parent()->removeChild(repr);
-            Inkscape::DocumentUndo::done(document, "MCP delete objects", "");
+            commit_mutation(document, "MCP delete objects", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < object_ids.size(); ++index) {
@@ -908,8 +1179,8 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             std::vector<Inkscape::XML::Node *> reprs;
             for (auto const &id : object_ids) {
@@ -930,7 +1201,7 @@ public:
                 Inkscape::GC::release(copy);
                 created_ids.push_back(copy_id);
             }
-            Inkscape::DocumentUndo::done(document, "MCP duplicate objects", "");
+            commit_mutation(document, "MCP duplicate objects", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < created_ids.size(); ++index) {
@@ -945,8 +1216,8 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), group_id = std::move(group_id), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             if (document->getObjectById(group_id)) return std::string("{\"state\":\"duplicate_id\"}");
             std::vector<Inkscape::XML::Node *> reprs;
@@ -969,7 +1240,7 @@ public:
                 group->appendChild(repr);
             }
             Inkscape::GC::release(group);
-            Inkscape::DocumentUndo::done(document, "MCP group objects", "");
+            commit_mutation(document, "MCP group objects", "");
             auto const next_revision = finish_bridge_mutation(document);
             return std::string("{\"revision\":") + std::to_string(next_revision) + ",\"changed_ids\":[" + json_string(group_id) + "]}";
         });
@@ -979,8 +1250,8 @@ public:
     {
         return execute([this, group_id = std::move(group_id), expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             auto *object = document->getObjectById(group_id);
             auto *group = object ? object->getRepr() : nullptr;
@@ -996,7 +1267,7 @@ public:
                 parent->appendChild(child);
             }
             parent->removeChild(group);
-            Inkscape::DocumentUndo::done(document, "MCP ungroup objects", "");
+            commit_mutation(document, "MCP ungroup objects", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < moved_ids.size(); ++index) {
@@ -1011,8 +1282,8 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), to_top, expected_revision] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
             std::vector<Inkscape::XML::Node *> reprs;
             Inkscape::XML::Node *parent = nullptr;
@@ -1044,7 +1315,7 @@ public:
                 if (to_top) parent->appendChild(repr);
                 else parent->addChild(repr, lowest_drawable_after);
             }
-            Inkscape::DocumentUndo::done(document, to_top ? "MCP raise objects" : "MCP lower objects", "");
+            commit_mutation(document, to_top ? "MCP raise objects" : "MCP lower objects", "");
             auto const next_revision = finish_bridge_mutation(document);
             std::string ids = "[";
             for (std::size_t index = 0; index < object_ids.size(); ++index) {
@@ -1083,8 +1354,8 @@ public:
         // for a child renderer there deadlocks a GApplication remote request.
         auto prepared = execute([this, staging] {
             auto *desktop = request_desktop();
-            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
-            auto *document = desktop->getDocument();
+            if (!desktop || !request_document()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = request_document();
             if (!sp_repr_save_file(document->getReprDoc(), staging->svg_path.c_str())) return std::string("{\"state\":\"snapshot_save_failed\"}");
             staging->revision = _revisions[document];
             staging->document_id = _document_ids.at(document);
@@ -1167,12 +1438,13 @@ private:
     public:
         BridgeMutation(GuiExecutor &executor, SPDocument *document) : _executor(executor), _document(document)
         {
-            _executor._bridge_mutating_documents.insert(_document);
+            ++_executor._bridge_mutating_documents[_document];
         }
 
         ~BridgeMutation()
         {
-            _executor._bridge_mutating_documents.erase(_document);
+            auto found = _executor._bridge_mutating_documents.find(_document);
+            if (found != _executor._bridge_mutating_documents.end() && --found->second == 0) _executor._bridge_mutating_documents.erase(found);
         }
 
     private:
@@ -1180,9 +1452,14 @@ private:
         SPDocument *_document;
     };
 
+    void commit_mutation(SPDocument *document, Glib::ustring const &label, Glib::ustring const &icon)
+    {
+        if (batch_document != document) Inkscape::DocumentUndo::done(document, label, icon);
+    }
+
     std::uint64_t finish_bridge_mutation(SPDocument *document)
     {
-        return ++_revisions[document];
+        return batch_document == document ? _revisions[document] : ++_revisions[document];
     }
 
     std::uint64_t current_revision(SPDocument *document, Inkscape::Selection *selection)
@@ -1217,7 +1494,7 @@ private:
         }
         if (selection && _selection_changed_connections.find(document) == _selection_changed_connections.end()) {
             _selection_changed_connections.emplace(document, selection->connectChanged([this, document](Inkscape::Selection *) {
-                ++_selection_generations[document];
+                if (batch_document != document) ++_selection_generations[document];
             }));
         }
     }
@@ -1257,6 +1534,10 @@ private:
 
     std::optional<std::string> execute(std::function<std::string()> operation, bool bind_document = true)
     {
+        if (batch_document) {
+            g_assert(g_main_context_is_owner(g_main_context_default()));
+            return operation();
+        }
         auto request = std::make_shared<Request>();
         auto const bind = bind_document && document_method(requested_method);
         request->operation = [this, operation = std::move(operation), target = requested_target, bind] {
@@ -1277,7 +1558,7 @@ private:
                 ~DesktopScope() { executing_desktop = previous; }
             } scope{executing_desktop};
             executing_desktop = desktop;
-            SPDocument *document = bind && desktop ? desktop->getDocument() : nullptr;
+            SPDocument *document = bind && desktop ? request_document() : nullptr;
             if (document) current_revision(document, desktop->getSelection());
             auto result = operation();
             // SPDocument::setModifiedSinceSave updates SP_ACTIVE_DESKTOP's
@@ -1323,7 +1604,7 @@ private:
     std::unordered_map<SPDocument *, std::uint64_t> _revisions;
     std::unordered_map<SPDocument *, std::string> _document_ids;
     std::unordered_map<SPDocument *, std::uint64_t> _selection_generations;
-    std::unordered_set<SPDocument *> _bridge_mutating_documents;
+    std::unordered_map<SPDocument *, unsigned> _bridge_mutating_documents;
     std::unordered_map<SPDocument *, sigc::connection> _document_modified_connections;
     std::unordered_map<SPDocument *, sigc::connection> _document_destroy_connections;
     std::unordered_map<SPDocument *, sigc::connection> _selection_changed_connections;
@@ -1459,7 +1740,7 @@ std::optional<std::uint64_t> expected_revision_of(mcpinkscape::json::Value const
 {
     auto const *expected = request->get("expected_revision");
     if (!expected || expected->type != mcpinkscape::json::Value::Type::number || expected->number < 0 ||
-        std::floor(expected->number) != expected->number) return std::nullopt;
+        std::floor(expected->number) != expected->number || expected->number > 9007199254740991.0) return std::nullopt;
     return static_cast<std::uint64_t>(expected->number);
 }
 
@@ -1615,7 +1896,7 @@ std::string response_for_request_impl(std::string const &line)
             "\"document_targeting\":true,\"instance_id\":" + json_string(native_instance_id()) + ","
             "\"pid\":" + std::to_string(application_pid()) + ",\"managed_session_id\":" + json_string(managed_session_id()) + ","
             "\"inkscape_version\":\"" + std::string(Inkscape::version_string) + "\","
-            "\"running\":true,\"methods\":[\"document.info\",\"object.inspect\",\"layer.list\",\"layer.create\",\"layer.set_current\",\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+            "\"running\":true,\"methods\":[\"document.batch\",\"document.info\",\"object.inspect\",\"layer.list\",\"layer.create\",\"layer.set_current\",\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
     }
     if (application_shutdown_pending.load()) return error_response(id->string, "application_closing", "application shutdown has been accepted");
     if (method->string == "application.status") {
@@ -1657,6 +1938,54 @@ std::string response_for_request_impl(std::string const &line)
         auto const result = gui_executor.poll_changes(static_cast<std::uint64_t>(after_revision->number), static_cast<std::uint64_t>(after_selection_generation->number));
         if (!result) return error_response(id->string, "gui_timeout", "Inkscape GUI did not service request within 5 seconds");
         return "{\"type\":\"response\",\"id\":\"" + id->string + "\",\"ok\":true,\"result\":" + *result + "}\n";
+    }
+    if (method->string == "document.batch") {
+        auto const *operations = params->get("operations");
+        auto expected_revision = expected_revision_of(&*request);
+        if (!requested_target || !expected_revision || !operations || operations->type != mcpinkscape::json::Value::Type::array ||
+            operations->array.empty() || operations->array.size() > 100 || line.size() > 256 * 1024 || params->object.size() != 1) {
+            return error_response(id->string, "invalid_request", "batch requires one explicit target, expected_revision, and 1 through 100 typed operations within 256 KiB");
+        }
+        static std::map<std::string, std::set<std::string>> const fields = {
+            {"shape.create", {"kind","values","object_id","layer_id","style"}},
+            {"text.create", {"text","x","y","object_id","layer_id","style"}},
+            {"text.set", {"object_id","text"}},
+            {"object.set_style", {"object_ids","style"}},
+            {"object.move", {"object_ids","dx","dy"}},
+            {"object.rotate", {"object_ids","degrees"}},
+            {"object.scale", {"object_ids","scale_x","scale_y"}},
+            {"object.delete", {"object_ids"}},
+            {"object.group", {"object_ids","group_id"}},
+            {"object.ungroup", {"group_id"}},
+            {"object.raise", {"object_ids"}},
+            {"object.lower", {"object_ids"}},
+            {"layer.create", {"layer_id","label","parent_layer_id"}},
+            {"gradient.create", {"kind","stops","geometry","gradient_id"}},
+            {"gradient.set_stops", {"gradient_id","stops"}},
+            {"gradient.apply", {"object_ids","gradient_id","target"}},
+            {"document.set_background", {"colour","opacity"}},
+        };
+        std::vector<std::string> requests;
+        for (auto const &operation : operations->array) {
+            auto const *name = operation.get("method");
+            auto const *arguments = operation.get("params");
+            if (operation.object.size() != 2 || !name || name->type != mcpinkscape::json::Value::Type::string ||
+                !arguments || arguments->type != mcpinkscape::json::Value::Type::object || !fields.contains(name->string)) {
+                return error_response(id->string, "invalid_request", "batch contains an unsupported or malformed operation");
+            }
+            for (auto const &[key, value] : arguments->object) if (!fields.at(name->string).contains(key)) {
+                return error_response(id->string, "invalid_request", "batch operation contains an unknown parameter");
+            }
+            requests.push_back("{\"type\":\"request\",\"protocol_version\":1,\"id\":\"batch-item\",\"method\":" + json_string(name->string) +
+                ",\"params\":" + json_value(*arguments) + ",\"expected_revision\":" + std::to_string(*expected_revision) + "}");
+        }
+        auto result = gui_executor.apply_batch(std::move(requests), *expected_revision);
+        if (result && result->starts_with("{\"error\":")) {
+            std::string parse_error;
+            auto error = mcpinkscape::json::Parser(*result).parse(parse_error);
+            return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":false,\"error\":" + json_value(*error->get("error")) + "}\n";
+        }
+        return mutation_response(id->string, result);
     }
     if (method->string == "document.info") return mutation_response(id->string, gui_executor.document_info());
     if (method->string == "object.inspect") {

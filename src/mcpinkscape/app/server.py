@@ -15,6 +15,7 @@ from fastmcp.server.transforms import Transform
 from mcpinkscape.config.api_keys import match_api_key
 from mcpinkscape.config.config_manager import generate_and_store_api_key, load_config, parse_arguments, setup_logging
 from mcpinkscape.config.schema import APIKeyConfig, AccessConfig, Config
+from mcpinkscape.batches import BatchOperations
 from mcpinkscape.service import InkscapeService, NATIVE_TOOL_METHODS
 
 
@@ -355,6 +356,10 @@ def _register_tools(server: FastMCP, state: ServerState) -> None:
     @server.tool(name = "get_snapshot_base64", description = "Retrieve a registered PNG snapshot as base64.")
     def get_snapshot_base64(snapshot_id: str, ctx: Context = None) -> dict[str, Any]:
         return service(ctx).get_snapshot_base64(snapshot_id)
+
+    @server.tool(name = "live_apply_batch", description = "Apply 1–100 typed edits to one explicit native document at one expected revision, after full prevalidation. Edits commit as one undo step; a no-op preserves history; execution failure rolls back changes. Never replay after a lost response.")
+    def live_apply_batch(operations: BatchOperations, instance_id: str, document_id: str, expected_revision: int, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_apply_batch(operations, instance_id, document_id, expected_revision)
 
     @server.tool(name = "live_get_document_info", description = "Inspect a native document's page, coordinate systems, root attributes, revision, and destination layer.")
     def live_get_document_info(instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:

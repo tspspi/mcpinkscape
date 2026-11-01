@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mcpinkscape.errors import LiveBackendUnavailableError, RevisionConflictError, StaleDocumentTargetError
+from mcpinkscape.errors import BatchValidationError, BatchExecutionError, LiveBackendUnavailableError, RevisionConflictError, StaleDocumentTargetError
 
 
 MAX_MESSAGE_BYTES = 1024 * 1024
@@ -132,6 +132,10 @@ class NativeBridgeClient:
                         raise LiveBackendUnavailableError("native bridge returned an unexpected response ID")
                     if not response.get("ok", False):
                         error = response.get("error") or {}
+                        if error.get("code") == "batch_validation_failed":
+                            raise BatchValidationError(str(error.get("message")))
+                        if error.get("code") == "batch_execution_failed":
+                            raise BatchExecutionError(str(error.get("message")))
                         if error.get("code") == "stale_document_target":
                             raise StaleDocumentTargetError(str(error.get("message") or "document target is no longer open"))
                         if error.get("code") == "revision_conflict":
