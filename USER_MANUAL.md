@@ -215,6 +215,8 @@ native Inkscape build. Run
 This fixture creates its own display, session bus, profile, and disposable
 documents. It checks lifecycle/reconnect behavior, explicit targets, inspection,
 layers, and rendered pixels without attaching to a working desktop session.
+The complete repository suite also exercises remote HTTP; install
+`pip install -e '.[dev,remote]'` before running `pytest -q` for that suite.
 
 ## Native Bridge and Platform Security
 

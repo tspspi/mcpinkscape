@@ -6,7 +6,7 @@ if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != 26.04 ] || [ "$(uname -m)" != x86_6
     exit 1
 fi
 # Explicit packages avoid requiring deb-src repositories just to bootstrap.
-task_packages='build-essential cmake ninja-build pkg-config ragel git ca-certificates python3 python3-lxml python3-numpy python3-scour python3-appdirs python3-cachecontrol python3-cssselect python3-filelock python3-requests python3-tinycss2 libboost-dev libboost-filesystem-dev libgc-dev libgsl-dev libgtkmm-3.0-dev libgtksourceview-4-dev libxslt1-dev liblcms2-dev libpotrace-dev libpoppler-glib-dev libdouble-conversion-dev lib2geom-dev libgspell-1-dev libenchant-2-dev libepoxy-dev libreadline-dev libpng-dev libjpeg-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libcdr-dev libvisio-dev libwpg-dev gettext intltool'
+task_packages='build-essential cmake ninja-build pkg-config ragel git ca-certificates python3 python3-lxml python3-numpy python3-scour python3-appdirs python3-cachecontrol python3-cssselect python3-filelock python3-requests python3-tinycss2 libboost-dev libboost-filesystem-dev libboost-stacktrace-dev libgc-dev libgsl-dev libgtkmm-3.0-dev libgtksourceview-4-dev libxslt1-dev liblcms2-dev libpotrace-dev libpoppler-glib-dev libpoppler-private-dev libdouble-conversion-dev lib2geom-dev libgspell-1-dev libenchant-2-dev libepoxy-dev libreadline-dev libpng-dev libjpeg-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libcdr-dev libvisio-dev libwpg-dev gettext intltool'
 if [ "${1:-install}" = package ]; then
     task_packages="$task_packages xvfb dbus libglib2.0-bin libxtst6"
 fi
