@@ -40,6 +40,13 @@ shutdown ownership. An attached user-launched GUI cannot be closed through these
 methods. `inkscape_status` reports ownership and modified documents; a restarted
 MCP process can recover a managed session's ownership without relaunching it.
 
+After a native application upgrade, an already running GUI still has its loaded
+bridge. Check the native bridge method list in `server_status` before using newer
+tools. Save the managed session's work before restarting it, then enumerate
+documents again because the application restart invalidates previous targets.
+Leave a user-owned GUI under the user's control; replacing application files
+does not upgrade its session.
+
 For native live work, enumerate with `live_list_documents` and retain the intended
 document's `instance_id` and `document_id`. Pass both to every live inspection,
 selection, edit, revision poll, and snapshot; focus can change during collaborative

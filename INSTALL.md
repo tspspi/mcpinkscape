@@ -66,6 +66,26 @@ The command runs rendering and bridge tests in a private Xvfb display and D-Bus 
 
 The Linux archive requires the supported distribution's runtime libraries.
 
+To exercise two built Linux versions through installation, upgrade, recovery,
+rollback, relocation, and removal, use a fresh disposable work directory:
+
+```sh
+python3 packaging/verify_installation.py \
+  --previous-artifact /path/to/previous-application \
+  --current-artifact /path/to/current-application \
+  --work-dir /path/to/new-test-directory --output /path/to/report.json
+```
+
+Both inputs must be managed applications with different native bridge binaries.
+The verifier runs the complete current GUI/lifecycle matrix after upgrade and
+relocation and a live bridge check after rollback. It preserves input contents
+and unrelated neighboring files. Existing test directories and reports are
+refused. Add `--temporarily-hide /path/to/build-cache` and the same option for
+each original application to run the GUI checks with those paths unavailable;
+they are restored on completion or failure. An interrupted run records the
+renamed paths in its report for recovery. This command tests Linux managed
+prefixes; it does not test FreeBSD package transactions or Windows installation.
+
 The staged application includes native source hashes and toolchain information. The shared driver additionally records the selected source archive, configuration flags, installed dependency versions, and verification results in `mcpinkscape-build.json`.
 
 FreeBSD packages also include `share/inkscape/mcpinkscape/port-inputs.json`, recording the parent port recipe and patch hashes, source checksum, selected options, and bridge revision/hashes. Changes to the configured parent recipe require a clean port rebuild.
