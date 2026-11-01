@@ -167,6 +167,7 @@ def test_native_only_tool_discovery_covers_every_service_route():
     service._native_status = {"methods": list(NATIVE_TOOL_METHODS.values())}
 
     assert set(NATIVE_TOOL_METHODS) == {
+        "live_list_documents",
         "live_poll_changes", "live_list_objects", "live_create_shape", "live_create_text",
         "live_set_text", "live_set_page_background", "live_create_gradient",
         "live_set_gradient_stops", "live_apply_gradient", "live_import_image",

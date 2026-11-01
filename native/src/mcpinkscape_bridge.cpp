@@ -52,6 +52,8 @@
 #include "document-undo.h"
 #include "inkscape.h"
 #include "inkscape-application.h"
+#include "inkscape-window.h"
+#include "ui/widget/desktop-widget.h"
 #include "inkscape-version.h"
 #include "gc-finalized.h"
 #include "layer-manager.h"
@@ -118,6 +120,36 @@ unsigned long application_pid()
 std::atomic_bool application_shutdown_pending = false;
 std::atomic_bool application_quit_scheduled = false;
 
+std::string const &native_instance_id()
+{
+    static std::string const identifier = [] {
+        auto *value = g_uuid_string_random();
+        std::string result(value);
+        g_free(value);
+        return result;
+    }();
+    return identifier;
+}
+
+struct DocumentTarget {
+    std::string instance_id;
+    std::string document_id;
+};
+
+thread_local std::optional<DocumentTarget> requested_target;
+thread_local std::string requested_method;
+thread_local SPDesktop *executing_desktop = nullptr;
+
+SPDesktop *request_desktop() { return executing_desktop; }
+
+bool document_method(std::string const &method)
+{
+    return (method.starts_with("document.") && method != "document.list") ||
+        method.starts_with("object.") || method.starts_with("shape.") ||
+        method.starts_with("text.") || method.starts_with("gradient.") ||
+        method.starts_with("image.") || method.starts_with("selection.") || method == "snapshot.render";
+}
+
 void quit_after_response()
 {
     if (!application_shutdown_pending.load() || application_quit_scheduled.exchange(true)) return;
@@ -138,6 +170,27 @@ struct GradientStop {
 
 class GuiExecutor final {
 public:
+    std::optional<std::string> document_list()
+    {
+        return execute([this] {
+            std::string documents = "[";
+            std::size_t count = 0;
+            if (auto *application = InkscapeApplication::instance()) for (auto *document : application->get_documents()) {
+                auto *desktop = desktop_for_document(document);
+                auto const revision = current_revision(document, desktop ? desktop->getSelection() : nullptr);
+                if (count++) documents += ",";
+                documents += "{\"document_id\":" + json_string(_document_ids.at(document)) +
+                    ",\"instance_id\":" + json_string(native_instance_id()) +
+                    ",\"label\":" + json_string(document->getDocumentName() ? document->getDocumentName() : "") +
+                    ",\"modified\":" + (document->isModifiedSinceSave() ? "true" : "false") +
+                    ",\"desktop_available\":" + (desktop ? "true" : "false") +
+                    ",\"revision\":" + std::to_string(revision) +
+                    ",\"selection_generation\":" + std::to_string(_selection_generations[document]) + "}";
+            }
+            return "{\"instance_id\":" + json_string(native_instance_id()) + ",\"documents\":" + documents + "]}";
+        });
+    }
+
     std::optional<std::string> application_status()
     {
         return execute([] {
@@ -208,7 +261,7 @@ public:
     std::optional<std::string> document_revision()
     {
         return execute([this] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false}");
             }
@@ -222,7 +275,7 @@ public:
     std::optional<std::string> object_list(std::optional<std::string> parent_id, std::size_t offset, std::size_t limit)
     {
         return execute([this, parent_id = std::move(parent_id), offset, limit] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"objects\":[]}");
             }
@@ -254,7 +307,7 @@ public:
     std::optional<std::string> selection_get()
     {
         return execute([] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"object_ids\":[]}");
             }
@@ -272,14 +325,17 @@ public:
         });
     }
 
-    std::optional<std::string> selection_set(std::vector<std::string> object_ids)
+    std::optional<std::string> selection_set(std::vector<std::string> object_ids, std::optional<std::uint64_t> expected_revision)
     {
-        return execute([object_ids = std::move(object_ids)] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+        return execute([this, object_ids = std::move(object_ids), expected_revision] {
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) {
                 return std::string("{\"document_id\":\"active\",\"open\":false,\"object_ids\":[]}");
             }
             auto *document = desktop->getDocument();
+            if (expected_revision && _revisions[document] != *expected_revision) {
+                return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
+            }
             std::vector<SPObject *> objects;
             objects.reserve(object_ids.size());
             for (auto const &id : object_ids) {
@@ -301,7 +357,7 @@ public:
     std::optional<std::string> poll_changes(std::uint64_t after_revision, std::uint64_t after_selection_generation)
     {
         return execute([this, after_revision, after_selection_generation] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"document_id\":\"active\",\"open\":false}");
             auto *document = desktop->getDocument();
             auto const revision = current_revision(document, desktop->getSelection());
@@ -331,7 +387,7 @@ public:
     )
     {
         return execute([this, object_ids = std::move(object_ids), style = std::move(style), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) {
                 return std::string("{\"state\":\"no_document\"}");
             }
@@ -383,7 +439,7 @@ public:
         return execute([this, element_name = std::move(element_name), attributes = std::move(attributes),
                         text = std::move(text), layer_id = std::move(layer_id), expected_revision,
                         undo_label = std::move(undo_label)] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) {
@@ -426,7 +482,7 @@ public:
     {
         return execute([this, object_ids = std::move(object_ids), transform_text = std::move(transform_text),
                         expected_revision, undo_label = std::move(undo_label)] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) {
@@ -460,7 +516,7 @@ public:
     std::optional<std::string> set_text(std::string object_id, std::string text, std::uint64_t expected_revision)
     {
         return execute([this, object_id = std::move(object_id), text = std::move(text), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) {
@@ -486,7 +542,7 @@ public:
     std::optional<std::string> set_background(std::string color, double opacity, std::uint64_t expected_revision)
     {
         return execute([this, color = std::move(color), opacity, expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) {
@@ -513,7 +569,7 @@ public:
     {
         return execute([this, kind = std::move(kind), gradient_id = std::move(gradient_id),
                         geometry = std::move(geometry), stops = std::move(stops), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) {
@@ -547,7 +603,7 @@ public:
     std::optional<std::string> set_gradient_stops(std::string gradient_id, std::vector<GradientStop> stops, std::uint64_t expected_revision)
     {
         return execute([this, gradient_id = std::move(gradient_id), stops = std::move(stops), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -578,7 +634,7 @@ public:
     std::optional<std::string> apply_gradient(std::vector<std::string> object_ids, std::string gradient_id, std::string target, std::uint64_t expected_revision)
     {
         return execute([this, object_ids = std::move(object_ids), gradient_id = std::move(gradient_id), target = std::move(target), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -613,7 +669,7 @@ public:
     std::optional<std::string> delete_objects(std::vector<std::string> object_ids, std::uint64_t expected_revision)
     {
         return execute([this, object_ids = std::move(object_ids), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -640,7 +696,7 @@ public:
     std::optional<std::string> duplicate_objects(std::vector<std::string> object_ids, std::uint64_t expected_revision)
     {
         return execute([this, object_ids = std::move(object_ids), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -677,7 +733,7 @@ public:
     std::optional<std::string> group_objects(std::vector<std::string> object_ids, std::string group_id, std::uint64_t expected_revision)
     {
         return execute([this, object_ids = std::move(object_ids), group_id = std::move(group_id), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -711,7 +767,7 @@ public:
     std::optional<std::string> ungroup_objects(std::string group_id, std::uint64_t expected_revision)
     {
         return execute([this, group_id = std::move(group_id), expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -743,7 +799,7 @@ public:
     std::optional<std::string> reorder_objects(std::vector<std::string> object_ids, bool to_top, std::uint64_t expected_revision)
     {
         return execute([this, object_ids = std::move(object_ids), to_top, expected_revision] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (_revisions[document] != expected_revision) return std::string("{\"state\":\"revision_conflict\",\"revision\":") + std::to_string(_revisions[document]) + "}";
@@ -795,6 +851,7 @@ public:
             std::string svg_path;
             std::string png_path;
             std::uint64_t revision = 0;
+            std::string document_id;
         };
         auto executable = current_inkscape_executable();
         // Prefer the process environment here.  GLib caches user-directory
@@ -814,11 +871,12 @@ public:
         // XML serialization must run on the Inkscape GUI thread, but waiting
         // for a child renderer there deadlocks a GApplication remote request.
         auto prepared = execute([this, staging] {
-            auto *desktop = SP_ACTIVE_DESKTOP;
+            auto *desktop = request_desktop();
             if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
             auto *document = desktop->getDocument();
             if (!sp_repr_save_file(document->getReprDoc(), staging->svg_path.c_str())) return std::string("{\"state\":\"snapshot_save_failed\"}");
             staging->revision = _revisions[document];
+            staging->document_id = _document_ids.at(document);
             return std::string("{\"prepared\":true}");
         });
         if (!prepared) return std::nullopt;
@@ -863,9 +921,9 @@ public:
         chmod(staging->png_path.c_str(), 0600);
         return execute([this, staging] {
             _snapshots.emplace(staging->snapshot_id, staging->png_path);
-            return std::string("{\"snapshot_id\":") + json_string(staging->snapshot_id) + ",\"staging_path\":" + json_string(staging->png_path) +
+            return std::string("{\"instance_id\":") + json_string(native_instance_id()) + ",\"document_id\":" + json_string(staging->document_id) + ",\"snapshot_id\":" + json_string(staging->snapshot_id) + ",\"staging_path\":" + json_string(staging->png_path) +
                 ",\"revision\":" + std::to_string(staging->revision) + "}";
-        });
+        }, false);
     }
 
     std::optional<std::string> release_snapshot(std::string snapshot_id)
@@ -880,6 +938,20 @@ public:
     }
 
 private:
+    SPDesktop *desktop_for_document(SPDocument *document)
+    {
+        SPDesktop *desktop = nullptr;
+        if (auto *application = InkscapeApplication::instance()) if (auto gtk = application->gtk_app()) {
+            for (auto *window : gtk->get_windows()) {
+                auto *inkscape_window = dynamic_cast<InkscapeWindow *>(window);
+                if (!inkscape_window || inkscape_window->get_document() != document) continue;
+                auto *candidate = inkscape_window->get_desktop();
+                if (candidate && (!desktop || std::less<SPDesktop *>{}(candidate, desktop))) desktop = candidate;
+            }
+        }
+        return desktop;
+    }
+
     class BridgeMutation final {
     public:
         BridgeMutation(GuiExecutor &executor, SPDocument *document) : _executor(executor), _document(document)
@@ -910,6 +982,11 @@ private:
 
     void observe_document(SPDocument *document, Inkscape::Selection *selection)
     {
+        if (!_document_ids.contains(document)) {
+            auto *identifier = g_uuid_string_random();
+            _document_ids.emplace(document, identifier);
+            g_free(identifier);
+        }
         if (_document_modified_connections.find(document) == _document_modified_connections.end()) {
             _revisions.try_emplace(document, 0);
             _selection_generations.try_emplace(document, 0);
@@ -921,6 +998,7 @@ private:
                 _revisions.erase(document);
                 _selection_generations.erase(document);
                 _bridge_mutating_documents.erase(document);
+                _document_ids.erase(document);
             }));
             _document_modified_connections.emplace(document, document->connectModified([this, document](unsigned) {
                 if (_bridge_mutating_documents.find(document) == _bridge_mutating_documents.end()) ++_revisions[document];
@@ -966,10 +1044,54 @@ private:
         delete static_cast<std::shared_ptr<Request> *>(value);
     }
 
-    std::optional<std::string> execute(std::function<std::string()> operation)
+    std::optional<std::string> execute(std::function<std::string()> operation, bool bind_document = true)
     {
         auto request = std::make_shared<Request>();
-        request->operation = std::move(operation);
+        auto const bind = bind_document && document_method(requested_method);
+        request->operation = [this, operation = std::move(operation), target = requested_target, bind] {
+            SPDesktop *desktop = SP_ACTIVE_DESKTOP;
+            if (bind && target) {
+                if (target->instance_id != native_instance_id()) return std::string("{\"state\":\"stale_document_target\"}");
+                SPDocument *document = nullptr;
+                if (auto *application = InkscapeApplication::instance()) for (auto *candidate : application->get_documents()) {
+                    auto found = _document_ids.find(candidate);
+                    if (found != _document_ids.end() && found->second == target->document_id) document = candidate;
+                }
+                if (!document) return std::string("{\"state\":\"stale_document_target\"}");
+                desktop = desktop_for_document(document);
+                if (!desktop) return std::string("{\"state\":\"document_not_displayed\"}");
+            }
+            struct DesktopScope {
+                SPDesktop *previous;
+                ~DesktopScope() { executing_desktop = previous; }
+            } scope{executing_desktop};
+            executing_desktop = desktop;
+            SPDocument *document = bind && desktop ? desktop->getDocument() : nullptr;
+            if (document) current_revision(document, desktop->getSelection());
+            auto result = operation();
+            // SPDocument::setModifiedSinceSave updates SP_ACTIVE_DESKTOP's
+            // title even when another document was modified. Repair that UI
+            // side effect without activating a window or redirecting edits.
+            if (bind && target) {
+                if (auto *application = InkscapeApplication::instance()) if (auto gtk = application->gtk_app()) {
+                    for (auto *window : gtk->get_windows()) {
+                        auto *view = dynamic_cast<InkscapeWindow *>(window);
+                        if (view && view->get_document() && view->get_desktop_widget()) {
+                            view->get_desktop_widget()->updateTitle(view->get_document()->getDocumentName());
+                        }
+                    }
+                }
+            }
+            if (document && !result.starts_with("{\"state\":") && !result.starts_with("{\"error\":")) {
+                auto const identity = json_string(_document_ids.at(document));
+                auto const old_id = std::string("\"document_id\":\"active\"");
+                auto const position = result.find(old_id);
+                if (position != std::string::npos) result.replace(position, old_id.size(), "\"document_id\":" + identity);
+                result.insert(1, "\"instance_id\":" + json_string(native_instance_id()) + "," +
+                    (position == std::string::npos ? "\"document_id\":" + identity + "," : ""));
+            }
+            return result;
+        };
         auto *retained_request = new std::shared_ptr<Request>(request);
         g_main_context_invoke_full(
             nullptr,
@@ -988,6 +1110,7 @@ private:
 
     // Accessed only by dispatch() on the GUI main context.
     std::unordered_map<SPDocument *, std::uint64_t> _revisions;
+    std::unordered_map<SPDocument *, std::string> _document_ids;
     std::unordered_map<SPDocument *, std::uint64_t> _selection_generations;
     std::unordered_set<SPDocument *> _bridge_mutating_documents;
     std::unordered_map<SPDocument *, sigc::connection> _document_modified_connections;
@@ -1233,8 +1356,10 @@ std::string mutation_response(std::string const &id, std::optional<std::string> 
     return "{\"type\":\"response\",\"id\":\"" + id + "\",\"ok\":true,\"result\":" + *result + "}\n";
 }
 
-std::string response_for_request(std::string const &line)
+std::string response_for_request_impl(std::string const &line)
 {
+    requested_target.reset();
+    requested_method.clear();
     std::string error;
     auto request = mcpinkscape::json::Parser(line).parse(error);
     if (!request || (request->type != mcpinkscape::json::Value::Type::object)) {
@@ -1260,12 +1385,25 @@ std::string response_for_request(std::string const &line)
         !params || (params->type != mcpinkscape::json::Value::Type::object)) {
         return error_response(id->string, "invalid_request", "invalid bridge request envelope");
     }
+    requested_method = method->string;
+    if (auto const *target = request->get("target")) {
+        auto const *instance = target->get("instance_id");
+        auto const *document = target->get("document_id");
+        if (target->type != mcpinkscape::json::Value::Type::object || !instance || !document ||
+            instance->type != mcpinkscape::json::Value::Type::string || document->type != mcpinkscape::json::Value::Type::string ||
+            !g_uuid_string_is_valid(instance->string.c_str()) || !g_uuid_string_is_valid(document->string.c_str()) ||
+            !document_method(requested_method)) {
+            return error_response(id->string, "invalid_request", "target requires instance_id/document_id UUIDs on a document operation");
+        }
+        requested_target = DocumentTarget{instance->string, document->string};
+    }
     if (method->string == "bridge.hello" || method->string == "bridge.status" || method->string == "bridge.ping") {
         return "{\"type\":\"response\",\"id\":\"" + id->string +
             "\",\"ok\":true,\"result\":{\"bridge\":\"mcpinkscape\",\"protocol_version\":1,"
+            "\"document_targeting\":true,\"instance_id\":" + json_string(native_instance_id()) + ","
             "\"pid\":" + std::to_string(application_pid()) + ",\"managed_session_id\":" + json_string(managed_session_id()) + ","
             "\"inkscape_version\":\"" + std::string(Inkscape::version_string) + "\","
-            "\"running\":true,\"methods\":[\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+            "\"running\":true,\"methods\":[\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
     }
     if (application_shutdown_pending.load()) return error_response(id->string, "application_closing", "application shutdown has been accepted");
     if (method->string == "application.status") {
@@ -1283,6 +1421,11 @@ std::string response_for_request(std::string const &line)
         }
         auto result = gui_executor.application_shutdown(session->string, mode->string);
         if (!result) return error_response(id->string, "gui_timeout", "GUI did not service application shutdown");
+        return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":true,\"result\":" + *result + "}\n";
+    }
+    if (method->string == "document.list") {
+        auto const result = gui_executor.document_list();
+        if (!result) return error_response(id->string, "gui_timeout", "GUI did not service document enumeration");
         return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":true,\"result\":" + *result + "}\n";
     }
     if (method->string == "document.revision") {
@@ -1344,13 +1487,16 @@ std::string response_for_request(std::string const &line)
             }
             ids.push_back(value.string);
         }
-        auto const result = gui_executor.selection_set(std::move(ids));
+        auto const expected_revision = expected_revision_of(&*request);
+        if (request->get("expected_revision") && !expected_revision) {
+            return error_response(id->string, "invalid_request", "selection revision must be a non-negative integer");
+        }
+        auto const result = gui_executor.selection_set(std::move(ids), expected_revision);
         if (!result) return error_response(id->string, "gui_timeout", "Inkscape GUI did not service request within 5 seconds");
         if (result->find("{\"error\":\"object_not_found\"") == 0) {
             return error_response(id->string, "object_not_found", "selection target does not exist");
         }
-        return "{\"type\":\"response\",\"id\":\"" + id->string +
-            "\",\"ok\":true,\"result\":" + *result + "}\n";
+        return mutation_response(id->string, result);
     }
     if (method->string == "object.set_style") {
         auto ids = object_ids_of(params);
@@ -1581,6 +1727,10 @@ std::string response_for_request(std::string const &line)
             return error_response(id->string, "invalid_request", "snapshot.render requires area page or drawing");
         }
         auto result = gui_executor.render_snapshot(area->string);
+        if (result && (result->starts_with("{\"state\":\"stale_document_target\"") ||
+                       result->starts_with("{\"state\":\"document_not_displayed\""))) {
+            return mutation_response(id->string, result);
+        }
         if (result && result->find("{\"state\":\"no_document\"") == 0) return error_response(id->string, "no_document", "no active Inkscape document");
         if (result && result->find("{\"state\":\"snapshot_unavailable\"") == 0) return error_response(id->string, "snapshot_failed", "native snapshot staging directory is unavailable");
         if (result && result->find("{\"state\":\"snapshot_directory_create_failed\"") == 0) return error_response(id->string, "snapshot_failed", "native snapshot staging directory could not be created");
@@ -1629,6 +1779,21 @@ std::string response_for_request(std::string const &line)
         return mutation_response(id->string, gui_executor.transform(std::move(*ids), std::move(transform_text), *expected_revision, std::move(undo_label)));
     }
     return error_response(id->string, "unsupported_method", "method is not implemented by this bridge build");
+}
+
+std::string response_for_request(std::string const &line)
+{
+    auto const response = response_for_request_impl(line);
+    std::string parse_error;
+    auto parsed = mcpinkscape::json::Parser(response).parse(parse_error);
+    if (parsed) if (auto const *result = parsed->get("result")) if (auto const *state = result->get("state")) {
+        auto const *id = parsed->get("id");
+        if (id && state->type == mcpinkscape::json::Value::Type::string) {
+            if (state->string == "stale_document_target") return error_response(id->string, "stale_document_target", "application instance changed or document was closed; enumerate targets again");
+            if (state->string == "document_not_displayed") return error_response(id->string, "document_not_displayed", "target document has no available desktop");
+        }
+    }
+    return response;
 }
 
 class BridgeServer final {

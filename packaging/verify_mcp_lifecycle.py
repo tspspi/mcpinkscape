@@ -51,10 +51,10 @@ async def check(executable, temporary, log):
     application = None
     state = None
 
-    def activate(action, application_id="org.inkscape.Inkscape"):
+    def activate(action, application_id="org.inkscape.Inkscape", parameters="[]"):
         subprocess.run(["gdbus", "call", "--session", "--dest", application_id,
                         "--object-path", "/" + application_id.replace(".", "/"), "--method", "org.gtk.Actions.Activate",
-                        action, "[]", "{}"], env=env, stdout=log, stderr=log, check=True, timeout=20)
+                        action, parameters, "{}"], env=env, stdout=log, stderr=log, check=True, timeout=20)
 
     async def available(client, expected):
         deadline = time.monotonic() + 20
@@ -140,6 +140,8 @@ asyncio.run(run())
             await client.call_tool("create_document", {"name": "offline-before-gui"})
             unavailable = await client.call_tool("live_list_objects", {}, raise_on_error=False)
             require(unavailable.is_error, "Live call unexpectedly succeeded without GUI")
+            from verify_document_targets import verify_document_targets
+            target_checks = await verify_document_targets(client, state, configuration, env, activate, temporary, log)
             started = (await client.call_tool("inkscape_start", {})).data
             require(started["started"] and started["owned"], "Managed startup did not establish ownership")
             original_pid = started["pid"]
@@ -228,6 +230,12 @@ asyncio.run(run())
         server, state = build_server(configuration)
         async with Client(server) as client:
             require((await client.call_tool("live_list_objects", {})).data["open"], "GUI-first connection failed")
+            ordinary = (await client.call_tool("live_list_documents", {})).data["documents"]
+            require(len(ordinary) == 1, "Expected one ordinary fixture document")
+            ordinary_target = {key: ordinary[0][key] for key in ("instance_id", "document_id")}
+            objects = (await client.call_tool("live_list_objects", ordinary_target)).data["objects"]
+            require(any(item["id"] == "lifecycle-cli-target" for item in objects), "Cannot target a user-style application")
+            target_checks["user_launched_application"] = True
             require(not (await client.call_tool("inkscape_status", {})).data["owned"], "Attached GUI became owned")
             denied = await client.call_tool("inkscape_shutdown", {}, raise_on_error=False)
             require(denied.is_error, "Unmanaged application shutdown was allowed")
@@ -245,7 +253,7 @@ asyncio.run(run())
             activate("quit-immediate")
             require(application.wait(timeout=15) == 0, "Relaunched GUI did not exit normally")
             application = None
-        return {"mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
+        return {"document_targeting": target_checks, "mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
                 "automatic_startup": True, "stdio_fresh_start": True, "startup_document": True,
                 "automatic_bridge_activation": True, "gui_before_mcp": True,
                 "bridge_restart": True, "mcp_process_restart": True, "gui_crash_recovery": True,

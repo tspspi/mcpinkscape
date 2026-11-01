@@ -356,101 +356,105 @@ def _register_tools(server: FastMCP, state: ServerState) -> None:
     def get_snapshot_base64(snapshot_id: str, ctx: Context = None) -> dict[str, Any]:
         return service(ctx).get_snapshot_base64(snapshot_id)
 
-    @server.tool(name = "live_status", description = "Inspect the version-probed active-window CLI backend.")
-    def live_status(ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_status()
+    @server.tool(name = "live_list_documents", description = "Enumerate open native documents and their stable instance/document IDs, revisions, and desktop availability.")
+    def live_list_documents(ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_list_documents()
 
-    @server.tool(name = "live_select", description = "Select objects in the active Inkscape window by ID.")
-    def live_select(object_ids: list[str], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_select(object_ids, expected_revision)
+    @server.tool(name = "live_status", description = "Inspect the live backend, or the revision of an explicitly targeted native document.")
+    def live_status(instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_status(instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_list_selection", description = "Inspect the focused live Inkscape selection through the native bridge or supported active-window CLI.")
-    def live_list_selection(ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_list_selection()
+    @server.tool(name = "live_select", description = "Select objects in the targeted native document, or focused window when no target is supplied by ID.")
+    def live_select(object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_select(object_ids, expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_list_objects", description = "List objects in the focused live Inkscape document through the native bridge.")
-    def live_list_objects(parent_id: str | None = None, offset: int = 0, limit: int = 100, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_list_objects(parent_id, offset, limit)
+    @server.tool(name = "live_list_selection", description = "Inspect the targeted or focused live Inkscape selection through the native bridge or supported active-window CLI.")
+    def live_list_selection(instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_list_selection(instance_id = instance_id, document_id = document_id)
+
+    @server.tool(name = "live_list_objects", description = "List objects in the targeted or focused live Inkscape document through the native bridge.")
+    def live_list_objects(parent_id: str | None = None, offset: int = 0, limit: int = 100, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_list_objects(parent_id, offset, limit, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_poll_changes", description = "Poll native live document and selection revisions for intervening collaborative edits.")
-    def live_poll_changes(after_revision: int, after_selection_generation: int, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_poll_changes(after_revision, after_selection_generation)
+    def live_poll_changes(after_revision: int, after_selection_generation: int, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_poll_changes(after_revision, after_selection_generation, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_create_shape", description = "Create a typed shape in the focused live document through the native bridge.")
-    def live_create_shape(kind: str, values: dict[str, Any], object_id: str | None = None, layer_id: str | None = None, style: dict[str, Any] | None = None, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_create_shape(kind, values, object_id, layer_id, style, expected_revision)
+    @server.tool(name = "live_create_shape", description = "Create a typed shape in the targeted or focused live document through the native bridge.")
+    def live_create_shape(kind: str, values: dict[str, Any], object_id: str | None = None, layer_id: str | None = None, style: dict[str, Any] | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_create_shape(kind, values, object_id, layer_id, style, expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_create_text", description = "Create typed text in the focused live document through the native bridge.")
-    def live_create_text(text: str, x: float, y: float, object_id: str | None = None, layer_id: str | None = None, style: dict[str, Any] | None = None, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_create_text(text, x, y, object_id, layer_id, style, expected_revision)
+    @server.tool(name = "live_create_text", description = "Create typed text in the targeted or focused live document through the native bridge.")
+    def live_create_text(text: str, x: float, y: float, object_id: str | None = None, layer_id: str | None = None, style: dict[str, Any] | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_create_text(text, x, y, object_id, layer_id, style, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_set_text", description = "Replace a basic text object's content through the native live bridge.")
-    def live_set_text(object_id: str, text: str, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_set_text(object_id, text, expected_revision)
+    def live_set_text(object_id: str, text: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_set_text(object_id, text, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_set_page_background", description = "Set page background colour and opacity through the native live bridge.")
-    def live_set_page_background(colour: str, opacity: float = 1.0, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_set_page_background(colour, opacity, expected_revision)
+    def live_set_page_background(colour: str, opacity: float = 1.0, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_set_page_background(colour, opacity, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_create_gradient", description = "Create a typed linear or radial SVG gradient through the native live bridge.")
-    def live_create_gradient(kind: str, stops: list[dict[str, Any]], geometry: dict[str, Any] | None = None, gradient_id: str | None = None, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_create_gradient(kind, stops, geometry, gradient_id, expected_revision)
+    def live_create_gradient(kind: str, stops: list[dict[str, Any]], geometry: dict[str, Any] | None = None, gradient_id: str | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_create_gradient(kind, stops, geometry, gradient_id, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_set_gradient_stops", description = "Replace typed gradient stops through the native live bridge.")
-    def live_set_gradient_stops(gradient_id: str, stops: list[dict[str, Any]], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_set_gradient_stops(gradient_id, stops, expected_revision)
+    def live_set_gradient_stops(gradient_id: str, stops: list[dict[str, Any]], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_set_gradient_stops(gradient_id, stops, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_apply_gradient", description = "Apply an existing native gradient to object fills or strokes.")
-    def live_apply_gradient(object_ids: list[str], gradient_id: str, target: str = "fill", expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_apply_gradient(object_ids, gradient_id, target, expected_revision)
+    def live_apply_gradient(object_ids: list[str], gradient_id: str, target: str = "fill", expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_apply_gradient(object_ids, gradient_id, target, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_import_image", description = "Embed a configured-root PNG or JPEG through the native live bridge.")
-    def live_import_image(path: str, x: float, y: float, width: float | None = None, height: float | None = None, object_id: str | None = None, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_import_image(path, x, y, width, height, object_id, expected_revision)
+    def live_import_image(path: str, x: float, y: float, width: float | None = None, height: float | None = None, object_id: str | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_import_image(path, x, y, width, height, object_id, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_delete_objects", description = "Atomically delete explicit object IDs through the native live bridge.")
-    def live_delete_objects(object_ids: list[str], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_delete_objects(object_ids, expected_revision)
+    def live_delete_objects(object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_delete_objects(object_ids, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_duplicate_objects", description = "Duplicate explicit live objects with returned stable IDs through the native bridge.")
-    def live_duplicate_objects(object_ids: list[str], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_duplicate_objects(object_ids, expected_revision)
+    def live_duplicate_objects(object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_duplicate_objects(object_ids, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_group_objects", description = "Group sibling live objects under an explicit stable group ID through the native bridge.")
-    def live_group_objects(object_ids: list[str], group_id: str, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_group_objects(object_ids, group_id, expected_revision)
+    def live_group_objects(object_ids: list[str], group_id: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_group_objects(object_ids, group_id, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_ungroup_objects", description = "Ungroup a live SVG group through the native bridge.")
-    def live_ungroup_objects(group_id: str, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_ungroup_objects(group_id, expected_revision)
+    def live_ungroup_objects(group_id: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_ungroup_objects(group_id, expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_raise_objects", description = "Raise sibling live objects to their parent's top stacking position.")
-    def live_raise_objects(object_ids: list[str], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_reorder_objects(object_ids, "top", expected_revision)
+    def live_raise_objects(object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_reorder_objects(object_ids, "top", expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_lower_objects", description = "Lower sibling live objects to their parent's bottom stacking position.")
-    def live_lower_objects(object_ids: list[str], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_reorder_objects(object_ids, "bottom", expected_revision)
+    def live_lower_objects(object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_reorder_objects(object_ids, "bottom", expected_revision, instance_id = instance_id, document_id = document_id)
 
     @server.tool(name = "live_set_style", description = "Set supported fill/stroke/opacity fields on selected live objects.")
-    def live_set_style(object_ids: list[str], style: dict[str, Any], expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_set_style(object_ids, style, expected_revision)
+    def live_set_style(object_ids: list[str], style: dict[str, Any], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_set_style(object_ids, style, expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_move", description = "Translate selected live objects in the active Inkscape window.")
-    def live_move(object_ids: list[str], dx: float, dy: float, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_transform("move", object_ids, [dx, dy], expected_revision)
+    @server.tool(name = "live_move", description = "Translate selected live objects in the targeted native document, or focused window when no target is supplied.")
+    def live_move(object_ids: list[str], dx: float, dy: float, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_transform("move", object_ids, [dx, dy], expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_rotate", description = "Rotate selected live objects in the active Inkscape window.")
-    def live_rotate(object_ids: list[str], degrees: float, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_transform("rotate", object_ids, [degrees], expected_revision)
+    @server.tool(name = "live_rotate", description = "Rotate selected live objects in the targeted native document, or focused window when no target is supplied.")
+    def live_rotate(object_ids: list[str], degrees: float, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_transform("rotate", object_ids, [degrees], expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_scale", description = "Scale selected live objects in the active Inkscape window.")
-    def live_scale(object_ids: list[str], scale_x: float, scale_y: float | None = None, expected_revision: int | None = None, ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_transform("scale", object_ids, [scale_x, scale_x if scale_y is None else scale_y], expected_revision)
+    @server.tool(name = "live_scale", description = "Scale selected live objects in the targeted native document, or focused window when no target is supplied.")
+    def live_scale(object_ids: list[str], scale_x: float, scale_y: float | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_transform("scale", object_ids, [scale_x, scale_x if scale_y is None else scale_y], expected_revision, instance_id = instance_id, document_id = document_id)
 
-    @server.tool(name = "live_render_snapshot", description = "Render the active Inkscape page or drawing into a registered PNG snapshot.")
-    def live_render_snapshot(area: str = "page", ctx: Context = None) -> dict[str, Any]:
-        return service(ctx).live_render_snapshot(area)
+    @server.tool(name = "live_render_snapshot", description = "Render the targeted or focused Inkscape page or drawing into a registered PNG snapshot.")
+    def live_render_snapshot(area: str = "page", instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_render_snapshot(area, instance_id = instance_id, document_id = document_id)
 
 
 def build_remote_app(server: FastMCP, state: ServerState):

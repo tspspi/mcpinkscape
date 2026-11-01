@@ -14,6 +14,7 @@ to its policy. This catalog describes the RC1 families.
 | Geometry and structure | `move_objects`, `rotate_objects`, `scale_objects`, `set_object_transform`, `duplicate_objects`, `delete_objects`, `group_objects`, `ungroup_objects`, `raise_objects`, `lower_objects` |
 | Visual feedback and files | `render_snapshot`, `list_snapshots`, `get_snapshot_base64`, `export_document` |
 | Active window | `live_status`, `live_select`, `live_set_style`, `live_move`, `live_rotate`, `live_scale`, `live_render_snapshot`, and native-only `live_poll_changes` |
+| Native document targets | `live_list_documents`; pass its `instance_id` and `document_id` together to subsequent live tools |
 | Native live drawing | `live_list_objects`, `live_create_shape`, `live_create_text`, `live_set_text`, `live_set_page_background`, `live_create_gradient`, `live_set_gradient_stops`, `live_apply_gradient`, `live_import_image`, `live_duplicate_objects`, `live_delete_objects`, `live_group_objects`, `live_ungroup_objects` (discoverable before connection in native/auto mode, then filtered by negotiated methods) |
 
 Offline mutations accept `expected_revision` where listed by the tool schema.
@@ -39,8 +40,15 @@ it never accepts a user-provided local path.
 When a native bridge is connected, every live mutation accepts
 `expected_revision`; use the current bridge revision and treat a mismatch as a
 conflict. The CLI compatibility backend cannot provide revision-safe live
-creation, so native-only live drawing tools will not be advertised without the
-bridge.
+creation. Native tools stay discoverable before connection in native/auto mode;
+an unavailable bridge produces an explicit error.
+
+Native live tools accept the optional pair `instance_id` and `document_id`.
+Retain both from `live_list_documents` so reads, edits, revision checks, and
+snapshots follow that document independently of focus. Bridge and MCP restarts
+preserve an open document's handle. Close/reopen and GUI restart invalidate it;
+enumerate again and confirm the intended document. CLI calls cannot accept this
+pair. With neither value supplied, live calls retain focus-based behavior.
 
 For collaborative work, retain both values returned by `live_poll_changes`:
 `revision` for document mutations and `selection_generation` for selection

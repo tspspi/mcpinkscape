@@ -40,6 +40,14 @@ shutdown ownership. An attached user-launched GUI cannot be closed through these
 methods. `inkscape_status` reports ownership and modified documents; a restarted
 MCP process can recover a managed session's ownership without relaunching it.
 
+For native live work, enumerate with `live_list_documents` and retain the intended
+document's `instance_id` and `document_id`. Pass both to every live inspection,
+selection, edit, revision poll, and snapshot; focus can change during collaborative
+work. The pair survives bridge/MCP reconnects while that document stays open.
+Close/reopen or application restart invalidates it: enumerate again and confirm
+the intended document before continuing. A stale handle must never be replaced
+silently. Older bridges and the CLI backend cannot accept explicit targets.
+
 ## Working method
 
 1. Call `server_status`, then create/open a document and inspect its revision.

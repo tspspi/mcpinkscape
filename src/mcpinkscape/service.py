@@ -18,6 +18,7 @@ from mcpinkscape.errors import (
     LiveActionUnsupportedError,
     LiveBackendUnavailableError,
     PolicyDeniedError,
+    StaleDocumentTargetError,
 )
 from mcpinkscape.native_bridge import NativeBridgeClient
 from mcpinkscape.renderer import InkscapeCLI
@@ -29,6 +30,7 @@ from mcpinkscape.svg_document import SVGDocument
 # names next to the service routes so dynamic tool discovery cannot drift from
 # the request implementation.
 NATIVE_TOOL_METHODS: dict[str, str] = {
+    "live_list_documents": "document.list",
     "live_poll_changes": "document.poll_changes",
     "live_list_objects": "object.list",
     "live_create_shape": "shape.create",
@@ -155,23 +157,49 @@ class InkscapeService:
         method: str,
         params: dict[str, Any],
         expected_revision: int | None = None,
+        *, instance_id: str | None = None, document_id: str | None = None,
     ) -> dict[str, Any]:
+        target = self._document_target(instance_id, document_id)
         self._require_native()
+        if target is not None and not self._native_status.get("document_targeting", False):
+            raise LiveActionUnsupportedError("installed native bridge does not support explicit document targeting")
         if not self._native_supports(method):
             raise LiveBackendUnavailableError(f"native bridge does not advertise method '{method}'")
-        return self._send_native_request(method, params, expected_revision)
+        result = self._send_native_request(method, params, expected_revision, target = target)
+        if target is not None and any(result.get(key) != value for key, value in target.items()):
+            raise StaleDocumentTargetError("native response does not identify the requested document")
+        return result
 
     def _send_native_request(
         self, method: str, params: dict[str, Any], expected_revision: int | None = None,
+        *, target: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         try:
-            return self.native_bridge.request(method, params, expected_revision)
+            arguments = {"target": target} if target is not None else {}
+            return self.native_bridge.request(method, params, expected_revision, **arguments)
         except LiveBackendUnavailableError as exc:
             self.native_bridge.close()
             self._native_status = None
             self._native_error = str(exc)
             # Never replay a mutation: a lost response may follow a successful edit.
             raise
+
+    @staticmethod
+    def _document_target(instance_id: str | None, document_id: str | None) -> dict[str, str] | None:
+        if instance_id is None and document_id is None:
+            return None
+        for value in (instance_id, document_id):
+            try:
+                if not isinstance(value, str) or len(value) != 36:
+                    raise ValueError()
+                uuid.UUID(value)
+            except ValueError as exc:
+                raise InvalidDrawingValueError("instance_id and document_id must both be native session UUIDs") from exc
+        return {"instance_id": instance_id, "document_id": document_id}
+
+    def _reject_cli_target(self, instance_id: str | None, document_id: str | None) -> None:
+        if self._document_target(instance_id, document_id) is not None:
+            raise LiveActionUnsupportedError("explicit document targeting requires the native bridge; CLI fallback is unavailable")
 
     def _native_supports(self, method: str) -> bool:
         if self._native_status is None:
@@ -537,14 +565,21 @@ class InkscapeService:
                 temporary_svg.unlink(missing_ok = True)
         return {"document_id": document_id, "path": str(destination.relative_to(self.document_root.root)), "mime_type": {"svg": "image/svg+xml", "plain-svg": "image/svg+xml", "png": "image/png", "pdf": "application/pdf"}[export_type], "revision": document.revision}
 
-    def live_status(self) -> dict[str, Any]:
+    def live_list_documents(self) -> dict[str, Any]:
+        return {"backend": "native_uds", **self._native_request("document.list", {})}
+
+    def live_status(self, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not self.access.allow_live_control:
             raise PolicyDeniedError("configured policy forbids live control")
+        if self._document_target(instance_id, document_id) is not None:
+            return {"backend": "native_uds", **self._native_request("document.revision", {},
+                instance_id = instance_id, document_id = document_id)}
         self._probe_native_bridge()
         if self._native_status is not None:
             return {"backend": "native_uds", **self._send_native_request("bridge.status", {})}
         if self.bridge.required or self.bridge.mode == "native_uds":
             raise LiveBackendUnavailableError(self._native_error or "native bridge is unavailable")
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         return {
             "backend": "active_window",
@@ -553,28 +588,30 @@ class InkscapeService:
             "actions": sorted(self.cli.capabilities.actions),
         }
 
-    def live_select(self, object_ids: list[str], expected_revision: int | None = None) -> dict[str, Any]:
+    def live_select(self, object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if self._native_supports("selection.set"):
-            return {"backend": "native_uds", **self._native_request("selection.set", {"object_ids": object_ids}, expected_revision)}
+            return {"backend": "native_uds", **self._native_request("selection.set", {"object_ids": object_ids}, expected_revision, instance_id = instance_id, document_id = document_id)}
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         self._reject_cli_revision(expected_revision)
         return {"backend": "active_window", **self.cli.active_select(object_ids)}
 
-    def live_list_selection(self) -> dict[str, Any]:
+    def live_list_selection(self, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if self._native_supports("selection.get"):
-            return {"backend": "native_uds", **self._native_request("selection.get", {})}
+            return {"backend": "native_uds", **self._native_request("selection.get", {}, instance_id = instance_id, document_id = document_id)}
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         return {"backend": "active_window", **self.cli.active_list_selection()}
 
-    def live_list_objects(self, parent_id: str | None = None, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    def live_list_objects(self, parent_id: str | None = None, offset: int = 0, limit: int = 100, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if (offset < 0) or (limit < 1) or (limit > 1000):
             raise InvalidDrawingValueError("live list offset must be non-negative and limit must be 1 through 1000")
         params: dict[str, Any] = {"offset": offset, "limit": limit}
         if parent_id is not None:
             params["parent_id"] = parent_id
-        return {"backend": "native_uds", **self._native_request("object.list", params)}
+        return {"backend": "native_uds", **self._native_request("object.list", params, instance_id = instance_id, document_id = document_id)}
 
-    def live_poll_changes(self, after_revision: int, after_selection_generation: int) -> dict[str, Any]:
+    def live_poll_changes(self, after_revision: int, after_selection_generation: int, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not isinstance(after_revision, int) or after_revision < 0:
             raise InvalidDrawingValueError("after_revision must be a non-negative integer")
         if not isinstance(after_selection_generation, int) or after_selection_generation < 0:
@@ -582,7 +619,7 @@ class InkscapeService:
         return {"backend": "native_uds", **self._native_request("document.poll_changes", {
             "after_revision": after_revision,
             "after_selection_generation": after_selection_generation,
-        })}
+        }, instance_id = instance_id, document_id = document_id)}
 
     def live_create_shape(
         self,
@@ -592,6 +629,8 @@ class InkscapeService:
         layer_id: str | None = None,
         style: dict[str, Any] | None = None,
         expected_revision: int | None = None,
+        instance_id: str | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-shape-validation")
         validated = validator.create_shape(kind, values, object_id, style = style)
@@ -600,7 +639,7 @@ class InkscapeService:
             params["layer_id"] = layer_id
         if style:
             params["style"] = style
-        return {"backend": "native_uds", **self._native_request("shape.create", params, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("shape.create", params, expected_revision, instance_id = instance_id, document_id = document_id)}
 
     def live_create_text(
         self,
@@ -611,6 +650,8 @@ class InkscapeService:
         layer_id: str | None = None,
         style: dict[str, Any] | None = None,
         expected_revision: int | None = None,
+        instance_id: str | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-text-validation")
         validated = validator.create_text(text, x, y, object_id, style = style)
@@ -619,40 +660,42 @@ class InkscapeService:
             params["layer_id"] = layer_id
         if style:
             params["style"] = style
-        return {"backend": "native_uds", **self._native_request("text.create", params, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("text.create", params, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_set_text(self, object_id: str, text: str, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_set_text(self, object_id: str, text: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-text-validation")
         validator.create_text("placeholder", 0, 0, object_id)
         validator.set_text(object_id, text)
-        return {"backend": "native_uds", **self._native_request("text.set", {"object_id": object_id, "text": text}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("text.set", {"object_id": object_id, "text": text}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_set_page_background(self, colour: str, opacity: Any = 1.0, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_set_page_background(self, colour: str, opacity: Any = 1.0, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-background-validation")
         validator.set_page_background(colour, opacity)
-        return {"backend": "native_uds", **self._native_request("document.set_background", {"color": colour, "opacity": float(opacity)}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("document.set_background", {"color": colour, "opacity": float(opacity)}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_create_gradient(self, kind: str, stops: list[dict[str, Any]], geometry: dict[str, Any] | None = None, gradient_id: str | None = None, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_create_gradient(self, kind: str, stops: list[dict[str, Any]], geometry: dict[str, Any] | None = None, gradient_id: str | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-gradient-validation")
         validated = validator.create_gradient(kind, stops, geometry, gradient_id)
-        return {"backend": "native_uds", **self._native_request("gradient.create", {"kind": kind, "stops": stops, "geometry": geometry or {}, "gradient_id": validated["id"]}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("gradient.create", {"kind": kind, "stops": stops, "geometry": geometry or {}, "gradient_id": validated["id"]}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_set_gradient_stops(self, gradient_id: str, stops: list[dict[str, Any]], expected_revision: int | None = None) -> dict[str, Any]:
+    def live_set_gradient_stops(self, gradient_id: str, stops: list[dict[str, Any]], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-gradient-validation")
         validator.create_gradient("linear", [{"offset": 0, "colour": "#000"}, {"offset": 1, "colour": "#fff"}], gradient_id = gradient_id)
         validator.set_gradient_stops(gradient_id, stops)
-        return {"backend": "native_uds", **self._native_request("gradient.set_stops", {"gradient_id": gradient_id, "stops": stops}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("gradient.set_stops", {"gradient_id": gradient_id, "stops": stops}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_apply_gradient(self, object_ids: list[str], gradient_id: str, target: str = "fill", expected_revision: int | None = None) -> dict[str, Any]:
+    def live_apply_gradient(self, object_ids: list[str], gradient_id: str, target: str = "fill", expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not object_ids:
             raise InvalidDrawingValueError("object_ids must not be empty")
         if target not in {"fill", "stroke"}:
             raise InvalidDrawingValueError("gradient target must be fill or stroke")
-        return {"backend": "native_uds", **self._native_request("gradient.apply", {"object_ids": object_ids, "gradient_id": gradient_id, "target": target}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("gradient.apply", {"object_ids": object_ids, "gradient_id": gradient_id, "target": target}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
     def live_import_image(
         self, path: str, x: Any, y: Any, width: Any | None = None, height: Any | None = None,
         object_id: str | None = None, expected_revision: int | None = None,
+        instance_id: str | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         """Stage one confined raster file for immediate native-bridge embedding."""
         source = self.document_root.resolve(path, suffixes = (".png", ".jpg", ".jpeg"))
@@ -686,42 +729,42 @@ class InkscapeService:
             result = self._native_request("image.import", {
                 "staging_path": str(staging), "mime_type": mime_type, "object_id": validated["id"],
                 "x": x, "y": y, "width": width, "height": height,
-            }, expected_revision)
+            }, expected_revision, instance_id = instance_id, document_id = document_id)
         finally:
             staging.unlink(missing_ok = True)
         return {"backend": "native_uds", **result, "source_path": str(source.relative_to(self.document_root.root)),
                 "mime_type": mime_type, "intrinsic_width_px": intrinsic_width, "intrinsic_height_px": intrinsic_height,
                 "embedded": True}
 
-    def live_delete_objects(self, object_ids: list[str], expected_revision: int | None = None) -> dict[str, Any]:
+    def live_delete_objects(self, object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not object_ids:
             raise InvalidDrawingValueError("object_ids must not be empty")
-        return {"backend": "native_uds", **self._native_request("object.delete", {"object_ids": object_ids}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("object.delete", {"object_ids": object_ids}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_duplicate_objects(self, object_ids: list[str], expected_revision: int | None = None) -> dict[str, Any]:
+    def live_duplicate_objects(self, object_ids: list[str], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not object_ids:
             raise InvalidDrawingValueError("object_ids must not be empty")
-        return {"backend": "native_uds", **self._native_request("object.duplicate", {"object_ids": object_ids}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("object.duplicate", {"object_ids": object_ids}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_group_objects(self, object_ids: list[str], group_id: str, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_group_objects(self, object_ids: list[str], group_id: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         validator = SVGDocument.create("mcpinkscape-live-group-validation")
         for index, object_id in enumerate(object_ids):
             validator.create_shape("rectangle", {"x": index, "y": 0, "width": 1, "height": 1}, object_id)
         validator.group(object_ids, group_id)
-        return {"backend": "native_uds", **self._native_request("object.group", {"object_ids": object_ids, "group_id": group_id}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("object.group", {"object_ids": object_ids, "group_id": group_id}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_ungroup_objects(self, group_id: str, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_ungroup_objects(self, group_id: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         if not group_id:
             raise InvalidDrawingValueError("group_id must not be empty")
-        return {"backend": "native_uds", **self._native_request("object.ungroup", {"group_id": group_id}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request("object.ungroup", {"group_id": group_id}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_reorder_objects(self, object_ids: list[str], direction: str, expected_revision: int | None = None) -> dict[str, Any]:
+    def live_reorder_objects(self, object_ids: list[str], direction: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         method = {"top": "object.raise", "bottom": "object.lower"}.get(direction)
         if method is None or not object_ids:
             raise InvalidDrawingValueError("live reorder requires IDs and direction top or bottom")
-        return {"backend": "native_uds", **self._native_request(method, {"object_ids": object_ids}, expected_revision)}
+        return {"backend": "native_uds", **self._native_request(method, {"object_ids": object_ids}, expected_revision, instance_id = instance_id, document_id = document_id)}
 
-    def live_set_style(self, object_ids: list[str], style: dict[str, Any], expected_revision: int | None = None) -> dict[str, Any]:
+    def live_set_style(self, object_ids: list[str], style: dict[str, Any], expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         # Reuse the offline typed style validation before serialising action
         # arguments for the active-window backend.
         validator = SVGDocument.create("mcpinkscape-live-style-validation")
@@ -729,7 +772,8 @@ class InkscapeService:
         validator.create_shape("rectangle", {"x": 0, "y": 0, "width": 1, "height": 1}, target_id)
         validator.set_style([target_id], style)
         if self._native_supports("object.set_style"):
-            return {"backend": "native_uds", **self._native_request("object.set_style", {"object_ids": object_ids, "style": style}, expected_revision)}
+            return {"backend": "native_uds", **self._native_request("object.set_style", {"object_ids": object_ids, "style": style}, expected_revision, instance_id = instance_id, document_id = document_id)}
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         self._reject_cli_revision(expected_revision)
         return {"backend": "active_window", **self.cli.active_set_style(object_ids, style)}
@@ -740,6 +784,8 @@ class InkscapeService:
         object_ids: list[str],
         values: list[float],
         expected_revision: int | None = None,
+        instance_id: str | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         method = {"move": "object.move", "rotate": "object.rotate", "scale": "object.scale"}.get(operation)
         if method is None:
@@ -750,15 +796,16 @@ class InkscapeService:
             for index, name in enumerate(names):
                 if index < len(values):
                     params[name] = values[index]
-            return {"backend": "native_uds", **self._native_request(method, params, expected_revision)}
+            return {"backend": "native_uds", **self._native_request(method, params, expected_revision, instance_id = instance_id, document_id = document_id)}
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         self._reject_cli_revision(expected_revision)
         return {"backend": "active_window", **self.cli.active_transform(object_ids, operation, values)}
 
-    def live_render_snapshot(self, area: str = "page") -> dict[str, Any]:
+    def live_render_snapshot(self, area: str = "page", instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         self._require_snapshots()
         if self._native_supports("snapshot.render"):
-            result = self._native_request("snapshot.render", {"area": area})
+            result = self._native_request("snapshot.render", {"area": area}, instance_id = instance_id, document_id = document_id)
             snapshot_id = str(result.get("snapshot_id", "")).strip()
             staging_path = result.get("staging_path")
             if (not snapshot_id) or (not isinstance(staging_path, str)):
@@ -777,7 +824,9 @@ class InkscapeService:
                     self._native_request("snapshot.release", {"snapshot_id": snapshot_id})
                 except LiveBackendUnavailableError:
                     pass
-            return {**self.snapshots.describe(snapshot), "backend": "native_uds", "revision": result.get("revision")}
+            return {**self.snapshots.describe(snapshot), "backend": "native_uds", "revision": result.get("revision"),
+                    **{key: result[key] for key in ("instance_id", "document_id") if key in result}}
+        self._reject_cli_target(instance_id, document_id)
         self._require_live()
         temporary_png = self._temporary_file(".png")
         try:

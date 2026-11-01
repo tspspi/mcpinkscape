@@ -31,6 +31,7 @@ def test_mcp_first_startup_bridge_restart_and_gui_relaunch(tmp_path):
     assert evidence["native_integration"]
     assert evidence["active_window_integration"]
     assert evidence["clean_gui_exit"]
+    assert evidence["document_targeting"] and all(evidence["document_targeting"].values())
     for scenario in ("automatic_startup", "stdio_fresh_start", "startup_document",
                      "automatic_bridge_activation", "gui_before_mcp",
                      "mcp_process_restart", "gui_crash_recovery", "save_on_shutdown",

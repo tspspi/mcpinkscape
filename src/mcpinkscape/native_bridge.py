@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mcpinkscape.errors import LiveBackendUnavailableError, RevisionConflictError
+from mcpinkscape.errors import LiveBackendUnavailableError, RevisionConflictError, StaleDocumentTargetError
 
 
 MAX_MESSAGE_BYTES = 1024 * 1024
@@ -95,7 +95,8 @@ class NativeBridgeClient:
     def status(self) -> dict[str, Any]:
         return self.request("bridge.hello", {})
 
-    def request(self, method: str, params: dict[str, Any], expected_revision: int | None = None) -> dict[str, Any]:
+    def request(self, method: str, params: dict[str, Any], expected_revision: int | None = None,
+                *, target: dict[str, str] | None = None) -> dict[str, Any]:
         request_id = uuid.uuid4().hex
         payload: dict[str, Any] = {
             "type": "request",
@@ -106,6 +107,8 @@ class NativeBridgeClient:
         }
         if expected_revision is not None:
             payload["expected_revision"] = expected_revision
+        if target is not None:
+            payload["target"] = dict(target)
         encoded = (json.dumps(payload, separators = (",", ":"), ensure_ascii = False) + "\n").encode("utf-8")
         if len(encoded) > MAX_MESSAGE_BYTES:
             raise LiveBackendUnavailableError("native bridge request exceeds 1 MiB limit")
@@ -129,6 +132,8 @@ class NativeBridgeClient:
                         raise LiveBackendUnavailableError("native bridge returned an unexpected response ID")
                     if not response.get("ok", False):
                         error = response.get("error") or {}
+                        if error.get("code") == "stale_document_target":
+                            raise StaleDocumentTargetError(str(error.get("message") or "document target is no longer open"))
                         if error.get("code") == "revision_conflict":
                             current_revision = error.get("current_revision")
                             detail = str(error.get("message") or "document changed")

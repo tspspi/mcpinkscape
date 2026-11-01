@@ -105,9 +105,24 @@ CLI fallback never redirects their operations into a separate user window.
 application log path and retains session state for recovery. The server does
 not forcibly terminate applications on startup or shutdown timeout.
 
-Only call `live_*` tools after the user has authorized changes to the currently
-focused Inkscape document. The active-window compatibility backend targets the
-most recently focused window, not a filename selected by the server.
+Only edit documents covered by the user's authorization. With the native bridge,
+call `live_list_documents` and retain the chosen document's `instance_id` and
+`document_id`. Pass both values to every subsequent live inspection, selection,
+edit, revision poll, and snapshot. These calls operate on that document even
+when the user focuses another window. A document without a window is listed
+with `desktop_available: false` and cannot receive live operations.
+
+The IDs survive bridge reconnects and MCP process restarts while the document
+remains open. Closing and reopening the same file creates a new document ID;
+restarting Inkscape creates a new instance ID. A stale target fails explicitly.
+Enumerate again and confirm the intended document before continuing. Targeted
+requests require a bridge advertising `document_targeting` and never fall back
+to the active-window CLI. Successful receipts and snapshots include both IDs.
+
+Omitting both IDs preserves focus-based compatibility behavior. The active-window
+CLI backend targets the most recently focused window and cannot accept explicit
+document targets. Live document IDs are session handles, separate from offline
+document IDs and filenames.
 
 For the CLI backend, use this bounded pattern:
 

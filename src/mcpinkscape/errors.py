@@ -19,6 +19,10 @@ class RevisionConflictError(InkscapeMCPError):
     code = "revision_conflict"
 
 
+class StaleDocumentTargetError(InkscapeMCPError):
+    code = "stale_document_target"
+
+
 class InvalidDrawingValueError(InkscapeMCPError):
     code = "invalid_value"
 

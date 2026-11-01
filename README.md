@@ -249,6 +249,12 @@ public for local health checks; `/mcp` requires a configured API key.
 
 ## Native Extension
 
+The native bridge supports stable document targets. Use `live_list_documents`,
+then pass the chosen `instance_id` and `document_id` to live tools so window focus
+changes cannot redirect edits or snapshots. See [the live workflow](USER_MANUAL.md)
+and [the protocol contract](native/DOCUMENT_TARGETING.md) for handle lifetimes
+and compatibility behavior.
+
 For the automated native application build/install entry points, see
 [INSTALL.md](INSTALL.md), including supported platforms and current limitations.
 
