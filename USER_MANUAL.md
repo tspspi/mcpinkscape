@@ -124,6 +124,33 @@ CLI backend targets the most recently focused window and cannot accept explicit
 document targets. Live document IDs are session handles, separate from offline
 document IDs and filenames.
 
+For native inspection, use `live_get_document_info` for page dimensions, root
+attributes, the current destination layer, and coordinate metadata.
+`live_get_object` returns an object's attributes, parent and child IDs, inherited
+paint and basic typography, local transform, transform into document space, and
+geometric/visual bounds. Text also includes its content and laid-out glyph bounds.
+Non-rendering objects have null bounds; visual bounds include stroke, clipping,
+masking, and filter extents as calculated by Inkscape. Inspection larger than
+512 KiB fails explicitly; inspect individual descendants of large groups.
+
+Bounds use document pixels with a top-left origin, x increasing rightward and y
+downward; one CSS inch is 96 pixels. Affine matrices are `[a,b,c,d,e,f]`, mapping
+`(x,y)` to `(a*x+c*y+e, b*x+d*y+f)`. `root_to_document` includes the viewBox mapping.
+Drawing coordinates and the effective style's `stroke_width_local` and
+`font_size_local` use the destination/object's local SVG user space. Use the
+returned matrices to compare them with document-pixel bounds; do not assume that
+one user unit equals one pixel. Cumulative opacity includes ancestor opacity;
+the reported paint and typography fields are a supported subset of CSS.
+
+`live_list_layers` returns paginated nested layers with parent layer IDs, labels,
+and each layer's own hidden/locked flags. `live_create_layer` creates a layer at
+the root, or inside `parent_layer_id`. Use `layer_id` on shape/text creation for
+an explicit destination, or `live_set_current_layer` to choose the default layer
+for subsequent drawing, including image imports. Both layer creation and setting
+the destination require `expected_revision`. Setting the destination preserves
+the selection and does not create an SVG edit or undo entry. Inspect and render
+the result with the same document target.
+
 For the CLI backend, use this bounded pattern:
 
 1. `live_status` to inspect advertised Inkscape actions.
@@ -150,6 +177,14 @@ The repository test suite contains an opt-in live verification harness. Set both
 `MCPINKSCAPE_LIVE_VERIFY=1` and `MCPINKSCAPE_LIVE_VERIFY_TARGET` to the known SVG
 ID in a dedicated, user-authorized open fixture before running it. It is skipped
 otherwise and never chooses an active document or object on its own.
+
+For automated Unix GUI verification, install the development dependencies
+(`pip install -e '.[dev]'`) and provide Xvfb, gdbus, dbus-run-session, and a matched
+native Inkscape build. Run
+`MCPINKSCAPE_GUI_VERIFY_EXECUTABLE=/path/to/inkscape pytest -q tests/test_gui_lifecycle_integration.py`.
+This fixture creates its own display, session bus, profile, and disposable
+documents. It checks lifecycle/reconnect behavior, explicit targets, inspection,
+layers, and rendered pixels without attaching to a working desktop session.
 
 ## Native Bridge and Platform Security
 

@@ -48,6 +48,20 @@ Close/reopen or application restart invalidates it: enumerate again and confirm
 the intended document before continuing. A stale handle must never be replaced
 silently. Older bridges and the CLI backend cannot accept explicit targets.
 
+Inspect native geometry with `live_get_document_info`, `live_get_object`, and
+`live_list_layers`. Bounds are in document pixels; drawing values are in the
+destination parent's SVG user space. Use the returned affine matrices for
+transformed groups and viewBoxes rather than assuming equal units. Check both
+geometric and visual bounds when stroke or filters affect spacing; text bounds
+come from Inkscape's layout. Effective style fields cover paint, opacity, and
+basic typography rather than every CSS property.
+
+Create native layers with `live_create_layer`, optionally beneath a parent layer.
+Pass `layer_id` when creating shapes/text, or set the default with
+`live_set_current_layer` and the observed revision. That default also controls
+image import and does not clear the current selection. Keep using the explicit
+document target for inspection, drawing, and rendered checks.
+
 ## Working method
 
 1. Call `server_status`, then create/open a document and inspect its revision.

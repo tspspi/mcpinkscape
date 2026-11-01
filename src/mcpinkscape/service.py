@@ -30,6 +30,11 @@ from mcpinkscape.svg_document import SVGDocument
 # names next to the service routes so dynamic tool discovery cannot drift from
 # the request implementation.
 NATIVE_TOOL_METHODS: dict[str, str] = {
+    "live_get_document_info": "document.info",
+    "live_get_object": "object.inspect",
+    "live_list_layers": "layer.list",
+    "live_create_layer": "layer.create",
+    "live_set_current_layer": "layer.set_current",
     "live_list_documents": "document.list",
     "live_poll_changes": "document.poll_changes",
     "live_list_objects": "object.list",
@@ -564,6 +569,32 @@ class InkscapeService:
             finally:
                 temporary_svg.unlink(missing_ok = True)
         return {"document_id": document_id, "path": str(destination.relative_to(self.document_root.root)), "mime_type": {"svg": "image/svg+xml", "plain-svg": "image/svg+xml", "png": "image/png", "pdf": "application/pdf"}[export_type], "revision": document.revision}
+
+    def live_get_document_info(self, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
+        return {"backend": "native_uds", **self._native_request("document.info", {}, instance_id=instance_id, document_id=document_id)}
+
+    def live_get_object(self, object_id: str, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
+        return {"backend": "native_uds", **self._native_request("object.inspect", {"object_id": object_id}, instance_id=instance_id, document_id=document_id)}
+
+    def live_list_layers(self, offset: int = 0, limit: int = 100, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
+        if offset < 0 or not 1 <= limit <= 1000:
+            raise InvalidDrawingValueError("layer list requires non-negative offset and limit 1 through 1000")
+        return {"backend": "native_uds", **self._native_request("layer.list", {"offset": offset, "limit": limit}, instance_id=instance_id, document_id=document_id)}
+
+    def live_create_layer(self, label: str, layer_id: str | None = None, parent_layer_id: str | None = None,
+                          expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
+        if not label or len(label.encode("utf-8")) > 1024 or "\0" in label:
+            raise InvalidDrawingValueError("layer label must contain 1 through 1024 UTF-8 bytes without NUL")
+        validator = SVGDocument.create("mcpinkscape-live-layer-validation")
+        validated = validator.create_layer(label, layer_id or f"layer-{uuid.uuid4().hex}")
+        params = {"label": label, "layer_id": validated["id"]}
+        if parent_layer_id is not None:
+            params["parent_layer_id"] = parent_layer_id
+        return {"backend": "native_uds", **self._native_request("layer.create", params, expected_revision, instance_id=instance_id, document_id=document_id)}
+
+    def live_set_current_layer(self, layer_id: str, expected_revision: int | None = None,
+                               instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
+        return {"backend": "native_uds", **self._native_request("layer.set_current", {"layer_id": layer_id}, expected_revision, instance_id=instance_id, document_id=document_id)}
 
     def live_list_documents(self) -> dict[str, Any]:
         return {"backend": "native_uds", **self._native_request("document.list", {})}

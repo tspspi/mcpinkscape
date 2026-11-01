@@ -43,6 +43,7 @@ remote = [
 ]
 dev = [
     "pytest>=8.0",
+    "Pillow>=10",
 ]
 
 [project.scripts]

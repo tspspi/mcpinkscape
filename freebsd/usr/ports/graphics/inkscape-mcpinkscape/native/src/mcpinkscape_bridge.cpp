@@ -60,6 +60,12 @@
 #include "object/sp-object.h"
 #include "object/sp-namedview.h"
 #include "object/sp-defs.h"
+#include "object/sp-root.h"
+#include "object/sp-text.h"
+#include "object/sp-flowtext.h"
+#include "style.h"
+#include "text-editing.h"
+#include "xml/attribute-record.h"
 #include "selection.h"
 #include "xml/document.h"
 #include "xml/node.h"
@@ -147,7 +153,7 @@ bool document_method(std::string const &method)
     return (method.starts_with("document.") && method != "document.list") ||
         method.starts_with("object.") || method.starts_with("shape.") ||
         method.starts_with("text.") || method.starts_with("gradient.") ||
-        method.starts_with("image.") || method.starts_with("selection.") || method == "snapshot.render";
+        method.starts_with("image.") || method.starts_with("layer.") || method.starts_with("selection.") || method == "snapshot.render";
 }
 
 void quit_after_response()
@@ -301,6 +307,211 @@ public:
             objects += "]";
             return std::string("{\"document_id\":\"active\",\"open\":true,\"revision\":") +
                 std::to_string(current_revision(document, desktop->getSelection())) + ",\"objects\":" + objects + "}";
+        });
+    }
+
+    static std::string affine_json(Geom::Affine const &affine)
+    {
+        std::string result = "[";
+        for (unsigned i = 0; i < 6; ++i) {
+            if (i) result += ",";
+            result += number_json(affine[i]);
+        }
+        return result + "]";
+    }
+
+    static std::string number_json(double value)
+    {
+        if (!std::isfinite(value)) return "null";
+        char buffer[G_ASCII_DTOSTR_BUF_SIZE];
+        return g_ascii_dtostr(buffer, sizeof(buffer), value);
+    }
+
+    static std::string bounds_json(Geom::OptRect const &bounds)
+    {
+        if (!bounds) return "null";
+        return "{\"x\":" + number_json(bounds->left()) + ",\"y\":" + number_json(bounds->top()) +
+            ",\"width\":" + number_json(bounds->width()) + ",\"height\":" + number_json(bounds->height()) + "}";
+    }
+
+    static std::string attributes_json(Inkscape::XML::Node const *repr)
+    {
+        std::string result = "{";
+        bool first = true;
+        for (auto const &attribute : repr->attributeList()) {
+            if (!first) result += ",";
+            first = false;
+            result += json_string(g_quark_to_string(attribute.key)) + ":" + json_string(attribute.value.pointer());
+        }
+        return result + "}";
+    }
+
+    static bool is_layer(SPObject *object)
+    {
+        auto *repr = object ? object->getRepr() : nullptr;
+        auto const *mode = repr ? repr->attribute("inkscape:groupmode") : nullptr;
+        return repr && std::string(repr->name()) == "svg:g" && mode && std::string(mode) == "layer";
+    }
+
+    static std::string coordinate_json(SPDocument *document)
+    {
+        auto *root = document->getRoot();
+        return "{\"bounds_space\":\"document_px\",\"unit\":\"px\",\"css_px_per_inch\":96,"
+            "\"origin\":\"top-left\",\"x_axis\":\"right\",\"y_axis\":\"down\","
+            "\"drawing_values_space\":\"destination_parent_user_space\",\"root_to_document\":" + affine_json(root->i2doc_affine()) +
+            ",\"page_width_px\":" + number_json(root->width.computed) +
+            ",\"page_height_px\":" + number_json(root->height.computed) + "}";
+    }
+
+    std::optional<std::string> document_info()
+    {
+        return execute([this] {
+            auto *desktop = request_desktop();
+            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = desktop->getDocument();
+            document->ensureUpToDate();
+            auto *layer = desktop->layerManager().currentLayer();
+            return "{\"revision\":" + std::to_string(_revisions[document]) + ",\"coordinates\":" + coordinate_json(document) +
+                ",\"root_attributes\":" + attributes_json(document->getReprRoot()) + ",\"current_layer_id\":" +
+                (layer && layer->getId() ? json_string(layer->getId()) : "null") + "}";
+        });
+    }
+
+    static std::string paint_json(SPIPaint const &paint)
+    {
+        if (!paint.isPaintserver() && paint.isColor()) return json_string(paint.value.color.toString());
+        return json_string(paint.get_value().raw());
+    }
+
+    std::optional<std::string> object_inspect(std::string object_id)
+    {
+        return execute([this, object_id = std::move(object_id)] {
+            auto *desktop = request_desktop();
+            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = desktop->getDocument();
+            document->ensureUpToDate();
+            auto *object = document->getObjectById(object_id);
+            if (!object) return std::string("{\"state\":\"object_not_found\"}");
+            auto *item = dynamic_cast<SPItem *>(object);
+            auto *parent = object->parent;
+            auto *repr = object->getRepr();
+            std::string result = "{\"revision\":" + std::to_string(_revisions[document]) +
+                ",\"object\":{\"id\":" + json_string(object_id) + ",\"type\":" + json_string(repr->name()) +
+                ",\"parent_id\":" + (parent && parent->getId() ? json_string(parent->getId()) : "null") +
+                ",\"is_layer\":" + (is_layer(object) ? "true" : "false") + ",\"attributes\":" + attributes_json(repr);
+            std::string children = "[";
+            bool first = true;
+            for (auto const &child : object->children) if (child.getId()) {
+                if (!first) children += ",";
+                first = false;
+                children += json_string(child.getId());
+            }
+            result += ",\"child_ids\":" + children + "]";
+            if (item) {
+                result += ",\"local_transform\":" + affine_json(item->transform) +
+                    ",\"item_to_document\":" + affine_json(item->i2doc_affine()) +
+                    ",\"geometric_bounds\":" + bounds_json(item->documentGeometricBounds()) +
+                    ",\"visual_bounds\":" + bounds_json(item->documentVisualBounds());
+                if (dynamic_cast<SPText *>(object) || dynamic_cast<SPFlowtext *>(object)) {
+                    result += ",\"text\":" + json_string(sp_te_get_string_multiline(item).raw()) +
+                        ",\"text_bounds\":" + bounds_json(item->documentGeometricBounds());
+                }
+            } else {
+                result += ",\"local_transform\":null,\"item_to_document\":null,\"geometric_bounds\":null,\"visual_bounds\":null";
+            }
+            if (auto *style = object->style) {
+                double cumulative_opacity = 1;
+                for (auto *ancestor = object; ancestor; ancestor = ancestor->parent) {
+                    if (ancestor->style) cumulative_opacity *= SP_SCALE24_TO_FLOAT(ancestor->style->opacity.value);
+                }
+                result += ",\"effective_style\":{\"fill\":" + paint_json(style->fill) + ",\"stroke\":" + paint_json(style->stroke) +
+                    ",\"fill_opacity\":" + number_json(SP_SCALE24_TO_FLOAT(style->fill_opacity.value)) +
+                    ",\"stroke_opacity\":" + number_json(SP_SCALE24_TO_FLOAT(style->stroke_opacity.value)) +
+                    ",\"opacity\":" + number_json(SP_SCALE24_TO_FLOAT(style->opacity.value)) +
+                    ",\"cumulative_opacity\":" + number_json(cumulative_opacity) +
+                    ",\"stroke_width_local\":" + number_json(style->stroke_width.computed) +
+                    ",\"font_size_local\":" + number_json(style->font_size.computed) +
+                    ",\"font_family\":" + json_string(style->font_family.value() ? style->font_family.value() : "") +
+                    ",\"font_weight\":" + std::to_string(style->font_weight.computed) + "}";
+            }
+            result += "},\"coordinates\":" + coordinate_json(document) + "}";
+            if (result.size() > MAX_LINE_BYTES / 2) return std::string("{\"state\":\"inspection_too_large\"}");
+            return result;
+        });
+    }
+
+    std::optional<std::string> layer_list(std::size_t offset, std::size_t limit)
+    {
+        return execute([this, offset, limit] {
+            auto *desktop = request_desktop();
+            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = desktop->getDocument();
+            document->ensureUpToDate();
+            std::size_t seen = 0, emitted = 0;
+            std::string result = "[";
+            std::function<void(SPObject *, std::string)> visit = [&](SPObject *parent, std::string parent_layer) {
+                for (auto &child : parent->children) {
+                    auto next_parent = parent_layer;
+                    if (is_layer(&child)) {
+                        if (seen++ >= offset && emitted < limit) {
+                            if (emitted++) result += ",";
+                            auto *repr = child.getRepr();
+                            auto const *label = repr->attribute("inkscape:label");
+                            auto const *locked = repr->attribute("sodipodi:insensitive");
+                            result += "{\"id\":" + (child.getId() ? json_string(child.getId()) : "null") +
+                                ",\"label\":" + json_string(label ? label : "") + ",\"parent_layer_id\":" +
+                                (parent_layer.empty() ? "null" : json_string(parent_layer)) +
+                                ",\"locked\":" + (locked && std::string(locked) == "true" ? "true" : "false") +
+                                ",\"hidden\":" + (dynamic_cast<SPItem &>(child).isHidden() ? "true" : "false") + "}";
+                        }
+                        if (child.getId()) next_parent = child.getId();
+                    }
+                    visit(&child, next_parent);
+                }
+            };
+            visit(document->getRoot(), "");
+            return "{\"revision\":" + std::to_string(_revisions[document]) + ",\"total\":" + std::to_string(seen) +
+                ",\"layers\":" + result + "]}";
+        });
+    }
+
+    std::optional<std::string> layer_create(std::string layer_id, std::string label, std::optional<std::string> parent_id,
+                                          std::uint64_t expected_revision)
+    {
+        return execute([this, layer_id = std::move(layer_id), label = std::move(label), parent_id = std::move(parent_id), expected_revision] {
+            auto *desktop = request_desktop();
+            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = desktop->getDocument();
+            if (_revisions[document] != expected_revision) return "{\"state\":\"revision_conflict\",\"revision\":" + std::to_string(_revisions[document]) + "}";
+            if (document->getObjectById(layer_id)) return std::string("{\"state\":\"duplicate_id\"}");
+            SPObject *parent = document->getRoot();
+            if (parent_id) {
+                parent = document->getObjectById(*parent_id);
+                if (!is_layer(parent)) return std::string("{\"state\":\"layer_not_found\"}");
+            }
+            BridgeMutation mutation(*this, document);
+            auto *repr = document->getReprDoc()->createElement("svg:g");
+            repr->setAttribute("id", layer_id.c_str());
+            repr->setAttribute("inkscape:groupmode", "layer");
+            repr->setAttribute("inkscape:label", label.c_str());
+            parent->appendChildRepr(repr);
+            Inkscape::GC::release(repr);
+            Inkscape::DocumentUndo::done(document, "MCP create layer", "");
+            return "{\"revision\":" + std::to_string(finish_bridge_mutation(document)) + ",\"changed_ids\":[" + json_string(layer_id) + "]}";
+        });
+    }
+
+    std::optional<std::string> layer_set_current(std::string layer_id, std::uint64_t expected_revision)
+    {
+        return execute([this, layer_id = std::move(layer_id), expected_revision] {
+            auto *desktop = request_desktop();
+            if (!desktop || !desktop->getDocument()) return std::string("{\"state\":\"no_document\"}");
+            auto *document = desktop->getDocument();
+            if (_revisions[document] != expected_revision) return "{\"state\":\"revision_conflict\",\"revision\":" + std::to_string(_revisions[document]) + "}";
+            auto *layer = document->getObjectById(layer_id);
+            if (!is_layer(layer)) return std::string("{\"state\":\"layer_not_found\"}");
+            desktop->layerManager().setCurrentLayer(layer);
+            return "{\"revision\":" + std::to_string(_revisions[document]) + ",\"current_layer_id\":" + json_string(layer_id) + "}";
         });
     }
 
@@ -1351,6 +1562,7 @@ std::string mutation_response(std::string const &id, std::optional<std::string> 
     if (result->find("{\"state\":\"no_document\"") == 0) return error_response(id, "no_document", "no active Inkscape document");
     if (result->find("{\"state\":\"object_not_found\"") == 0) return error_response(id, "object_not_found", "object target does not exist");
     if (result->find("{\"state\":\"layer_not_found\"") == 0) return error_response(id, "layer_not_found", "target layer does not exist");
+    if (result->starts_with("{\"state\":\"inspection_too_large\"")) return error_response(id, "inspection_too_large", "inspection exceeds 512 KiB; inspect smaller objects");
     if (result->find("{\"state\":\"duplicate_id\"") == 0) return error_response(id, "duplicate_id", "object ID already exists");
     if (result->find("{\"state\":\"no_target_layer\"") == 0) return error_response(id, "no_target_layer", "there is no active target layer");
     return "{\"type\":\"response\",\"id\":\"" + id + "\",\"ok\":true,\"result\":" + *result + "}\n";
@@ -1403,7 +1615,7 @@ std::string response_for_request_impl(std::string const &line)
             "\"document_targeting\":true,\"instance_id\":" + json_string(native_instance_id()) + ","
             "\"pid\":" + std::to_string(application_pid()) + ",\"managed_session_id\":" + json_string(managed_session_id()) + ","
             "\"inkscape_version\":\"" + std::string(Inkscape::version_string) + "\","
-            "\"running\":true,\"methods\":[\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+            "\"running\":true,\"methods\":[\"document.info\",\"object.inspect\",\"layer.list\",\"layer.create\",\"layer.set_current\",\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
     }
     if (application_shutdown_pending.load()) return error_response(id->string, "application_closing", "application shutdown has been accepted");
     if (method->string == "application.status") {
@@ -1445,6 +1657,43 @@ std::string response_for_request_impl(std::string const &line)
         auto const result = gui_executor.poll_changes(static_cast<std::uint64_t>(after_revision->number), static_cast<std::uint64_t>(after_selection_generation->number));
         if (!result) return error_response(id->string, "gui_timeout", "Inkscape GUI did not service request within 5 seconds");
         return "{\"type\":\"response\",\"id\":\"" + id->string + "\",\"ok\":true,\"result\":" + *result + "}\n";
+    }
+    if (method->string == "document.info") return mutation_response(id->string, gui_executor.document_info());
+    if (method->string == "object.inspect") {
+        auto const *object_id = params->get("object_id");
+        if (!object_id || object_id->type != mcpinkscape::json::Value::Type::string || !valid_identifier(object_id->string)) {
+            return error_response(id->string, "invalid_request", "object.inspect requires a valid object_id");
+        }
+        return mutation_response(id->string, gui_executor.object_inspect(object_id->string));
+    }
+    if (method->string == "layer.list") {
+        auto const *offset = params->get("offset");
+        auto const *limit = params->get("limit");
+        if (!offset || !limit || offset->type != mcpinkscape::json::Value::Type::number ||
+            limit->type != mcpinkscape::json::Value::Type::number || offset->number < 0 ||
+            limit->number < 1 || limit->number > 1000 || std::floor(offset->number) != offset->number ||
+            std::floor(limit->number) != limit->number || offset->number > 1000000000) {
+            return error_response(id->string, "invalid_request", "layer.list requires integer offset and limit 1 through 1000");
+        }
+        return mutation_response(id->string, gui_executor.layer_list(offset->number, limit->number));
+    }
+    if (method->string == "layer.create" || method->string == "layer.set_current") {
+        auto const *layer_id = params->get("layer_id");
+        auto expected_revision = expected_revision_of(&*request);
+        if (!layer_id || layer_id->type != mcpinkscape::json::Value::Type::string || !valid_identifier(layer_id->string) || !expected_revision) {
+            return error_response(id->string, "invalid_request", "layer operation requires layer_id and non-negative integer expected_revision");
+        }
+        if (method->string == "layer.set_current") return mutation_response(id->string, gui_executor.layer_set_current(layer_id->string, *expected_revision));
+        auto const *label = params->get("label");
+        if (!label || label->type != mcpinkscape::json::Value::Type::string || label->string.empty() || label->string.size() > 1024 || label->string.find('\0') != std::string::npos) {
+            return error_response(id->string, "invalid_request", "layer label must contain 1 through 1024 UTF-8 bytes without NUL");
+        }
+        std::optional<std::string> parent_id;
+        if (auto const *parent = params->get("parent_layer_id")) {
+            if (parent->type != mcpinkscape::json::Value::Type::string || !valid_identifier(parent->string)) return error_response(id->string, "invalid_request", "parent_layer_id is invalid");
+            parent_id = parent->string;
+        }
+        return mutation_response(id->string, gui_executor.layer_create(layer_id->string, label->string, parent_id, *expected_revision));
     }
     if (method->string == "object.list") {
         auto const *offset = params->get("offset");

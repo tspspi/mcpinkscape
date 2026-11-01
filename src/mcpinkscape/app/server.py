@@ -356,6 +356,26 @@ def _register_tools(server: FastMCP, state: ServerState) -> None:
     def get_snapshot_base64(snapshot_id: str, ctx: Context = None) -> dict[str, Any]:
         return service(ctx).get_snapshot_base64(snapshot_id)
 
+    @server.tool(name = "live_get_document_info", description = "Inspect a native document's page, coordinate systems, root attributes, revision, and destination layer.")
+    def live_get_document_info(instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_get_document_info(instance_id, document_id)
+
+    @server.tool(name = "live_get_object", description = "Inspect native object attributes, effective styles, transforms, document-pixel geometric/visual bounds, and laid-out text bounds.")
+    def live_get_object(object_id: str, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_get_object(object_id, instance_id, document_id)
+
+    @server.tool(name = "live_list_layers", description = "List nested native layers with parent IDs, labels, visibility, and locking state.")
+    def live_list_layers(offset: int = 0, limit: int = 100, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_list_layers(offset, limit, instance_id, document_id)
+
+    @server.tool(name = "live_create_layer", description = "Create a native layer at the document root or inside an explicit parent layer, with a revision check.")
+    def live_create_layer(label: str, layer_id: str | None = None, parent_layer_id: str | None = None, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_create_layer(label, layer_id, parent_layer_id, expected_revision, instance_id, document_id)
+
+    @server.tool(name = "live_set_current_layer", description = "Choose the native document's destination layer for subsequent drawing, without changing window focus; requires the observed revision.")
+    def live_set_current_layer(layer_id: str, expected_revision: int | None = None, instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_set_current_layer(layer_id, expected_revision, instance_id, document_id)
+
     @server.tool(name = "live_list_documents", description = "Enumerate open native documents and their stable instance/document IDs, revisions, and desktop availability.")
     def live_list_documents(ctx: Context = None) -> dict[str, Any]:
         return service(ctx).live_list_documents()
