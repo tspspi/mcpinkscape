@@ -21,6 +21,11 @@ class BridgeConfig(BaseModel):
     timeout_seconds: float = 30.0
     required: bool = False  # Require native live control, not availability at startup.
     executable: str = "inkscape"
+    auto_enable: bool = True
+    startup_timeout_seconds: float = Field(default = 45.0, gt = 0, le = 300)
+    shutdown_timeout_seconds: float = Field(default = 20.0, gt = 0, le = 300)
+    desktop_environment: dict[Literal["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+                                      "XAUTHORITY", "XDG_RUNTIME_DIR"], str] = Field(default_factory = dict)
 
 
 class TransportConfig(BaseModel):
@@ -51,10 +56,12 @@ class AccessConfig(BaseModel):
     allow_document_write: bool = True
     allow_snapshots: bool = True
     allow_live_control: bool = True
+    allow_application_control: bool = True
     enable_autonomous_execution: bool = True
 
 
 class APIKeyConfig(AccessConfig):
+    allow_application_control: bool = False
     id: str
     kdf: dict = Field(default_factory = dict)
 

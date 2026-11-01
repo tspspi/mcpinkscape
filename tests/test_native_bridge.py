@@ -33,14 +33,18 @@ def test_service_connects_when_bridge_starts_later(tmp_path, mode, required, fir
     listener.bind(str(path))
     path.chmod(0o600)
     listener.listen(1)
-    listener.settimeout(5)
+    listener.settimeout(0.2)
     received = []
+    stopped = threading.Event()
 
     def server():
-        connection, _ = listener.accept()
-        with connection, connection.makefile("rb") as reader:
-            while raw := reader.readline():
-                request = json.loads(raw)
+        while not stopped.is_set():
+            try:
+                connection, _ = listener.accept()
+            except socket.timeout:
+                continue
+            with connection, connection.makefile("rb") as reader:
+                request = json.loads(reader.readline())
                 received.append(request["method"])
                 result = {"revision": 12, "object_ids": []}
                 if request["method"] == "bridge.hello":
@@ -61,6 +65,7 @@ def test_service_connects_when_bridge_starts_later(tmp_path, mode, required, fir
         assert received[:2] == ["bridge.hello", "document.revision"]
     finally:
         service.close()
+        stopped.set()
         thread.join(timeout = 5)
         listener.close()
     assert not thread.is_alive()
@@ -185,13 +190,17 @@ def test_service_routes_native_live_operations_and_imports_snapshot(tmp_path):
     path.chmod(0o600)
     listener.listen(1)
     received: list[dict] = []
+    stopped = threading.Event()
+    listener.settimeout(0.2)
 
     def server():
-        connection, _ = listener.accept()
-        with connection:
-            reader = connection.makefile("rb")
-            while raw := reader.readline():
-                request = json.loads(raw.decode("utf-8"))
+        while not stopped.is_set():
+            try:
+                connection, _ = listener.accept()
+            except socket.timeout:
+                continue
+            with connection, connection.makefile("rb") as reader:
+                request = json.loads(reader.readline())
                 received.append(request)
                 method = request["method"]
                 if method == "bridge.hello":
@@ -236,6 +245,7 @@ def test_service_routes_native_live_operations_and_imports_snapshot(tmp_path):
         assert received[-1]["method"] == "snapshot.release"
     finally:
         service.close()
+        stopped.set()
         thread.join(timeout = 5)
         listener.close()
 

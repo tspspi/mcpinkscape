@@ -51,6 +51,7 @@
 #include "document.h"
 #include "document-undo.h"
 #include "inkscape.h"
+#include "inkscape-application.h"
 #include "inkscape-version.h"
 #include "gc-finalized.h"
 #include "layer-manager.h"
@@ -86,6 +87,46 @@ std::string json_string(std::string const &value)
 
 std::optional<std::string> current_inkscape_executable();
 
+std::string bridge_state_directory()
+{
+    if (auto const *endpoint = g_getenv("MCPINKSCAPE_BRIDGE_SOCKET")) {
+        auto *parent = g_path_get_dirname(endpoint);
+        std::string directory(parent);
+        g_free(parent);
+        return directory;
+    }
+    auto const *state = g_getenv("XDG_STATE_HOME");
+    if (!state || !*state) state = g_get_user_state_dir();
+    return std::string(state ? state : "") + "/mcpinkscape";
+}
+
+std::string managed_session_id()
+{
+    auto const *session = g_getenv("MCPINKSCAPE_SESSION_ID");
+    return session ? session : "";
+}
+
+unsigned long application_pid()
+{
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return getpid();
+#endif
+}
+
+std::atomic_bool application_shutdown_pending = false;
+std::atomic_bool application_quit_scheduled = false;
+
+void quit_after_response()
+{
+    if (!application_shutdown_pending.load() || application_quit_scheduled.exchange(true)) return;
+    g_idle_add([](gpointer) -> gboolean {
+        if (auto *application = InkscapeApplication::instance()) application->on_quit_immediate();
+        return G_SOURCE_REMOVE;
+    }, nullptr);
+}
+
 // Socket worker threads must never inspect or modify Inkscape document state.
 // This small executor transfers one request at a time to the GTK main context
 // and retains the waiting request storage until the callback has completed.
@@ -97,6 +138,73 @@ struct GradientStop {
 
 class GuiExecutor final {
 public:
+    std::optional<std::string> application_status()
+    {
+        return execute([] {
+            auto *application = InkscapeApplication::instance();
+            std::string documents = "[";
+            std::size_t index = 0;
+            if (application) for (auto *document : application->get_documents()) {
+                if (index) documents += ",";
+                documents += "{\"index\":" + std::to_string(index++) + ",\"modified\":" +
+                    (document->isModifiedSinceSave() ? "true}" : "false}");
+            }
+            return "{\"documents\":" + documents + "],\"closing\":" +
+                (application_shutdown_pending.load() ? "true}" : "false}");
+        });
+    }
+
+    std::optional<std::string> application_shutdown(std::string session, std::string save_mode)
+    {
+        return execute([session = std::move(session), save_mode = std::move(save_mode)] {
+#ifdef _WIN32
+            return std::string("{\"state\":\"application_lifecycle_unsupported\"}");
+#else
+            if (session.empty() || session != managed_session_id()) return std::string("{\"state\":\"application_not_owned\"}");
+            auto *application = InkscapeApplication::instance();
+            if (!application) return std::string("{\"state\":\"application_unavailable\"}");
+            auto const documents = application->get_documents();
+            if (save_mode == "refuse") for (auto *document : documents) {
+                if (document->isModifiedSinceSave()) return std::string("{\"state\":\"unsaved_documents\"}");
+            }
+            std::string saved_paths = "[";
+            std::size_t saved = 0;
+            if (save_mode == "save") {
+                auto const *root = g_getenv("MCPINKSCAPE_DOCUMENT_ROOT");
+                if (!root || !g_path_is_absolute(root)) return std::string("{\"state\":\"save_root_unavailable\"}");
+                auto directory = std::string(root) + "/inkscape-sessions";
+                for (auto const &path : {directory, directory + "/" + session}) {
+                    if (g_mkdir(path.c_str(), 0700) != 0 && errno != EEXIST) return std::string("{\"state\":\"save_directory_failed\"}");
+                    struct stat information {};
+                    if (lstat(path.c_str(), &information) != 0 || !S_ISDIR(information.st_mode) ||
+                        information.st_uid != geteuid() || chmod(path.c_str(), 0700) != 0) {
+                        return std::string("{\"state\":\"unsafe_save_directory\"}");
+                    }
+                }
+                directory += "/" + session;
+                for (auto *document : documents) {
+                    if (!document->isModifiedSinceSave()) continue;
+                    document->ensureUpToDate();
+                    auto *identifier = g_uuid_string_random();
+                    auto filename = directory + "/" + identifier + ".svg";
+                    g_free(identifier);
+                    if (!sp_repr_save_rebased_file(document->getReprDoc(), filename.c_str(), nullptr,
+                                                  document->getDocumentBase(), filename.c_str())) {
+                        return std::string("{\"state\":\"document_save_failed\"}");
+                    }
+                    if (chmod(filename.c_str(), 0600) != 0) return std::string("{\"state\":\"save_permissions_failed\"}");
+                    if (saved++) saved_paths += ",";
+                    saved_paths += json_string(filename);
+                }
+            }
+            // Save and freeze the UI in one GUI callback before scheduling quit.
+            application_shutdown_pending.store(true);
+            if (auto gtk = application->gtk_app()) for (auto *window : gtk->get_windows()) window->set_sensitive(false);
+            return "{\"accepted\":true,\"saved_paths\":" + saved_paths + "]}";
+#endif
+        });
+    }
+
     std::optional<std::string> document_revision()
     {
         return execute([this] {
@@ -692,10 +800,8 @@ public:
         // Prefer the process environment here.  GLib caches user-directory
         // values during application startup, while a loaded extension must
         // honour the explicitly configured bridge state root.
-        auto const *state_home = g_getenv("XDG_STATE_HOME");
-        if (!state_home || !*state_home) state_home = g_get_user_state_dir();
-        if (!executable || !state_home) return std::string("{\"state\":\"snapshot_unavailable\"}");
-        auto const directory = std::string(state_home) + "/mcpinkscape/snapshots";
+        if (!executable) return std::string("{\"state\":\"snapshot_unavailable\"}");
+        auto const directory = bridge_state_directory() + "/snapshots";
         if (g_mkdir_with_parents(directory.c_str(), 0700) != 0) return std::string("{\"state\":\"snapshot_directory_create_failed\"}");
         if (chmod(directory.c_str(), 0700) != 0) return std::string("{\"state\":\"snapshot_directory_permissions_failed\"}");
         auto staging = std::make_shared<SnapshotStaging>();
@@ -832,12 +938,19 @@ private:
         std::mutex mutex;
         std::condition_variable condition;
         bool complete = false;
+        bool started = false;
+        bool cancelled = false;
         std::string result;
     };
 
     static gboolean dispatch(gpointer value)
     {
         auto const request = *static_cast<std::shared_ptr<Request> *>(value);
+        {
+            std::lock_guard lock(request->mutex);
+            if (request->cancelled) return G_SOURCE_REMOVE;
+            request->started = true;
+        }
         auto result = request->operation();
         {
             std::lock_guard lock(request->mutex);
@@ -867,6 +980,7 @@ private:
         );
         std::unique_lock lock(request->mutex);
         if (!request->condition.wait_for(lock, std::chrono::seconds(5), [&request] { return request->complete; })) {
+            if (!request->started) request->cancelled = true;
             return std::nullopt;
         }
         return request->result;
@@ -937,9 +1051,7 @@ std::optional<std::string> staged_image_data_uri(std::string const &path, std::s
     return std::nullopt;
 #else
     if (mime_type != "image/png" && mime_type != "image/jpeg") return std::nullopt;
-    auto const *state_home = g_get_user_state_dir();
-    if (!state_home) return std::nullopt;
-    auto const imports = std::string(state_home) + "/mcpinkscape/imports";
+    auto const imports = bridge_state_directory() + "/imports";
     auto const canonical_imports = g_canonicalize_filename(imports.c_str(), nullptr);
     auto const canonical_path = g_canonicalize_filename(path.c_str(), nullptr);
     if (!canonical_imports || !canonical_path) {
@@ -1151,8 +1263,27 @@ std::string response_for_request(std::string const &line)
     if (method->string == "bridge.hello" || method->string == "bridge.status" || method->string == "bridge.ping") {
         return "{\"type\":\"response\",\"id\":\"" + id->string +
             "\",\"ok\":true,\"result\":{\"bridge\":\"mcpinkscape\",\"protocol_version\":1,"
+            "\"pid\":" + std::to_string(application_pid()) + ",\"managed_session_id\":" + json_string(managed_session_id()) + ","
             "\"inkscape_version\":\"" + std::string(Inkscape::version_string) + "\","
-            "\"running\":true,\"methods\":[\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+            "\"running\":true,\"methods\":[\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+    }
+    if (application_shutdown_pending.load()) return error_response(id->string, "application_closing", "application shutdown has been accepted");
+    if (method->string == "application.status") {
+        auto result = gui_executor.application_status();
+        if (!result) return error_response(id->string, "gui_timeout", "GUI did not service application status");
+        return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":true,\"result\":" + *result + "}\n";
+    }
+    if (method->string == "application.shutdown") {
+        auto const *session = params->get("session_id");
+        auto const *mode = params->get("save_mode");
+        if (!session || session->type != mcpinkscape::json::Value::Type::string ||
+            !mode || mode->type != mcpinkscape::json::Value::Type::string ||
+            (mode->string != "save" && mode->string != "refuse" && mode->string != "discard")) {
+            return error_response(id->string, "invalid_request", "shutdown requires session_id and save_mode save, refuse, or discard");
+        }
+        auto result = gui_executor.application_shutdown(session->string, mode->string);
+        if (!result) return error_response(id->string, "gui_timeout", "GUI did not service application shutdown");
+        return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":true,\"result\":" + *result + "}\n";
     }
     if (method->string == "document.revision") {
         auto const result = gui_executor.document_revision();
@@ -1509,8 +1640,7 @@ public:
 #else
         if (_running.load()) return true;
 
-        auto const *state_home = g_get_user_state_dir();
-        _state_directory = std::string(state_home ? state_home : "") + "/mcpinkscape";
+        _state_directory = bridge_state_directory();
         if (g_mkdir_with_parents(_state_directory.c_str(), 0700) != 0) {
             g_warning("mcpInkscape bridge: cannot create state directory: %s", g_strerror(errno));
             return false;
@@ -1521,6 +1651,7 @@ public:
         }
 
         _socket_path = _state_directory + "/bridge.sock";
+        if (auto const *endpoint = g_getenv("MCPINKSCAPE_BRIDGE_SOCKET")) _socket_path = endpoint;
         unlink(_socket_path.c_str());
         _listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (_listen_fd < 0) {
@@ -1662,6 +1793,7 @@ private:
     {
         auto const body = response_for_request(line);
         send(client, body.data(), body.size(), 0);
+        quit_after_response();
     }
 
     std::atomic_bool _running = false;
@@ -1773,6 +1905,7 @@ private:
     {
         auto const body = response_for_request(line);
         send(client, body.data(), static_cast<int>(body.size()), 0);
+        quit_after_response();
     }
 
     std::atomic_bool _running = false;

@@ -2,7 +2,7 @@
 
 The native build entry points produce Inkscape and the mcpInkscape bridge as one matched application. You do not need to assemble an Inkscape build, copy extension files, or set resource/library environment variables.
 
-The Python MCP server remains a separate installation; see [README.md](README.md) for its configuration. Installing the native application does not start a bridge listener. Use **Start MCP Inkscape Bridge** in the Extensions menu when you want live editing.
+The Python MCP server remains a separate installation; see [README.md](README.md) for its configuration. Installing the native application does not start a bridge listener. On Unix, the MCP server enables the bridge on demand by default. `inkscape_start` launches the configured matched application and enables its bridge without a menu action. The Extensions menu still provides manual Start/Stop/Status controls.
 
 FreeBSD and Ubuntu builds have been tested with the GUI and native bridge. FreeBSD installation on a clean system has not yet been tested. Windows support is experimental and untested.
 

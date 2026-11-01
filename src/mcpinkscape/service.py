@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mcpinkscape.config.schema import AccessConfig, BridgeConfig
+from mcpinkscape.application import InkscapeApplication
 from mcpinkscape.errors import (
     DocumentNotFoundError,
     InvalidDrawingValueError,
@@ -65,6 +66,7 @@ class InkscapeService:
         )
         self._native_status: dict[str, Any] | None = None
         self._native_error: str | None = None
+        self.application = InkscapeApplication(access, bridge, self.document_root)
         # Connect on demand: Inkscape and its bridge may start after the MCP
         # server, including when native live control is required.
 
@@ -78,7 +80,12 @@ class InkscapeService:
             self._native_error = "native bridge disabled by bridge.mode"
             return
         try:
-            self._native_status = self.native_bridge.status()
+            try:
+                self._native_status = self.native_bridge.status()
+            except LiveBackendUnavailableError:
+                if not self.application.enable_bridge():
+                    raise
+                self._native_status = self.native_bridge.status()
             # Start the extension's document observer as soon as the MCP
             # service attaches.  This establishes the revision baseline before
             # a human or another agent can make an intervening edit.
@@ -118,6 +125,7 @@ class InkscapeService:
             "allow_document_write": self.access.allow_document_write,
             "allow_snapshots": self.access.allow_snapshots,
             "allow_live_control": self.access.allow_live_control,
+            "allow_application_control": self.access.allow_application_control,
             "enable_autonomous_execution": self.access.enable_autonomous_execution,
         }
 
@@ -138,8 +146,7 @@ class InkscapeService:
     def _require_native(self) -> None:
         if not self.access.allow_live_control:
             raise PolicyDeniedError("configured policy forbids live control")
-        if self._native_status is None:
-            self._probe_native_bridge()
+        self._probe_native_bridge()
         if self._native_status is None:
             raise LiveBackendUnavailableError(self._native_error or "native bridge is unavailable")
 
@@ -182,7 +189,26 @@ class InkscapeService:
         return bool(method and self._native_supports(method))
 
     def _active_window_enabled(self) -> bool:
-        return not self.bridge.required and self.bridge.mode in ("auto", "active_window")
+        if self.bridge.required or self.bridge.mode not in ("auto", "active_window"):
+            return False
+        # Tagged managed applications have their own GApplication identity.
+        # A CLI fallback would target the user's ordinary Inkscape instead.
+        return self.bridge.mode == "active_window" or not self.application.managed_process_present()
+
+    def inkscape_start(self, path: str | None = None) -> dict[str, Any]:
+        return self.application.start(path)
+
+    def inkscape_status(self) -> dict[str, Any]:
+        return self.application.status()
+
+    def inkscape_shutdown(self, save_mode: str = "save") -> dict[str, Any]:
+        result = self.application.shutdown(save_mode)
+        self.native_bridge.close()
+        self._native_status = None
+        return result
+
+    def inkscape_release(self) -> dict[str, Any]:
+        return self.application.release()
 
     @staticmethod
     def _reject_cli_revision(expected_revision: int | None) -> None:

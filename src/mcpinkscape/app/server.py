@@ -52,6 +52,7 @@ DOCUMENT_WRITE_TOOLS = frozenset({
 })
 SNAPSHOT_TOOLS = frozenset({"render_snapshot", "list_snapshots", "get_snapshot_base64"})
 NATIVE_BRIDGE_TOOLS = frozenset(NATIVE_TOOL_METHODS)
+APPLICATION_TOOLS = frozenset({"inkscape_start", "inkscape_status", "inkscape_shutdown", "inkscape_release"})
 
 
 def _tool_allowed_for_access(name: str, access: AccessConfig, native_bridge_available: bool = False) -> bool:
@@ -63,6 +64,8 @@ def _tool_allowed_for_access(name: str, access: AccessConfig, native_bridge_avai
     if name in SNAPSHOT_TOOLS and not access.allow_snapshots:
         return False
     if name.startswith("live_") and not access.allow_live_control:
+        return False
+    if name in APPLICATION_TOOLS and (not access.allow_live_control or not access.allow_application_control):
         return False
     if name in NATIVE_BRIDGE_TOOLS and not native_bridge_available:
         return False
@@ -133,6 +136,22 @@ def _register_tools(server: FastMCP, state: ServerState) -> None:
     @server.tool(name = "server_status", description = "Return offline, active-window, native-bridge, and policy status.")
     def server_status(ctx: Context = None) -> dict[str, Any]:
         return service(ctx).server_status()
+
+    @server.tool(name = "inkscape_start", description = "Launch the configured Inkscape with its bridge automatically enabled, or attach to an existing instance. Optional SVG path is relative to document_root.")
+    def inkscape_start(path: str | None = None, ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).inkscape_start(path)
+
+    @server.tool(name = "inkscape_status", description = "Inspect Inkscape process ownership, session identity, and modified documents.")
+    def inkscape_status(ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).inkscape_status()
+
+    @server.tool(name = "inkscape_shutdown", description = "Close an owned Inkscape session. save_mode saves modified SVG copies under document_root by default; refuse keeps modified sessions open; discard explicitly discards unsaved edits.")
+    def inkscape_shutdown(save_mode: str = "save", ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).inkscape_shutdown(save_mode)
+
+    @server.tool(name = "inkscape_release", description = "Hand an owned Inkscape session to the user, leaving it open and relinquishing shutdown ownership.")
+    def inkscape_release(ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).inkscape_release()
 
     @server.tool(name = "list_documents", description = "List documents currently held by this MCP session.")
     def list_documents(ctx: Context = None) -> list[dict[str, Any]]:

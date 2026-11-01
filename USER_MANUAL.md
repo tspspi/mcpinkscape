@@ -61,6 +61,50 @@ Use CSS-style colour values accepted by the typed tools, for example `#1565c0`,
 
 ## Running Inkscape Collaboration
 
+For an agent-managed GUI, use:
+
+1. `inkscape_start`, optionally with an existing SVG `path` relative to
+   `document_root`. It launches the configured `bridge.executable`, opens a
+   document without a splash dialog, enables the bridge, and waits for readiness.
+   Calling it again attaches to the running application without creating a duplicate.
+2. Use `live_*` tools with revision checks and rendered feedback.
+3. `inkscape_shutdown` saves modified documents as new SVG copies under
+   `document_root/inkscape-sessions/` and returns their relative `saved_paths`.
+   Existing source files are preserved. Linked asset references are rebased.
+   Use `save_mode: "refuse"` to keep modified documents open, or explicitly
+   choose `save_mode: "discard"` to close without saving.
+4. For interactive handoff, use `inkscape_release`. The application stays open
+   and reconnectable, and the server relinquishes permission to shut it down.
+
+Application control requires a Unix graphical session, session D-Bus, `gdbus`
+in PATH, and the updated ABI-matched native extension. Windows application
+lifecycle control is unavailable. Local stdio enables `allow_application_control`
+by default; remote API keys default to false and must opt in explicitly.
+The permission also requires `allow_live_control`. Saving on shutdown requires
+`allow_document_write`.
+
+The server inherits its desktop environment. If your MCP client strips graphical
+environment variables, set `bridge.desktop_environment` to the desktop session's
+`DISPLAY` (or `WAYLAND_DISPLAY`), `DBUS_SESSION_BUS_ADDRESS`, and, where needed,
+`XAUTHORITY` and `XDG_RUNTIME_DIR`. Managed session state retains these values so
+a restarted server can control the existing application even with a stripped
+environment. Current inherited values take precedence for a new launch.
+
+The server can start before or after Inkscape. With `bridge.auto_enable: true`
+(the default), native status checks and live calls activate an available bridge
+without requiring the user to select an extension action. They reconnect after
+bridge or GUI restarts. MCP disconnection leaves the GUI open, and a new MCP
+process can recover ownership of its managed session from private local state.
+The server checks session identity, PID, document root, and access-policy owner
+before closing an application. Attaching to a user-launched application does
+not grant shutdown ownership. Managed applications use the native backend;
+CLI fallback never redirects their operations into a separate user window.
+
+`bridge.startup_timeout_seconds` defaults to 45 and
+`bridge.shutdown_timeout_seconds` to 20. A readiness failure reports the managed
+application log path and retains session state for recovery. The server does
+not forcibly terminate applications on startup or shutdown timeout.
+
 Only call `live_*` tools after the user has authorized changes to the currently
 focused Inkscape document. The active-window compatibility backend targets the
 most recently focused window, not a filename selected by the server.

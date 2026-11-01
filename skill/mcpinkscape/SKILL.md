@@ -22,10 +22,23 @@ accessibility, or a final handoff.
 
 - Use the offline document tools for deterministic document creation and
   editing without a GUI. Work only below the server's configured document root.
-- Use `live_*` tools only when `server_status` reports active-window support
-  and the user has authorized edits to their running Inkscape document.
+- Use `live_*` tools when `server_status` reports a native bridge or supported
+  active-window backend and the user has authorized the drawing work.
 - A native bridge, when installed, is optional. Its absence must not block the
   offline or advertised active-window workflow.
+
+For an agent-managed GUI, call `inkscape_start`; it opens the configured matched
+application and enables the bridge without a menu action. Repeated starts attach
+without duplicating the application. MCP/bridge reconnects preserve the running
+document; never replay a mutation after losing its response.
+
+When finished, `inkscape_shutdown` saves modified SVG copies under the configured
+document root and returns their paths. Use `save_mode: "refuse"` to leave unsaved
+work open. Explicit discard needs authorization to lose that work. For an
+interactive handoff, `inkscape_release` leaves the GUI open and relinquishes
+shutdown ownership. An attached user-launched GUI cannot be closed through these
+methods. `inkscape_status` reports ownership and modified documents; a restarted
+MCP process can recover a managed session's ownership without relaunching it.
 
 ## Working method
 

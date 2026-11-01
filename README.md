@@ -39,6 +39,8 @@ extension is optional and its ABI must exactly match Inkscape.
   mcpFreeCAD-style API-key policy controls
 - optional loaded C++ bridge extension over private UDS on FreeBSD/Linux, or
   literal `127.0.0.1` TCP only on Windows
+- managed Inkscape launch, automatic native bridge activation, restart recovery,
+  save-on-shutdown, and interactive handoff on Unix graphical sessions
 - repository-owned [coding-agent skill](skill/mcpinkscape/SKILL.md) and RC1
   tool catalog
 
@@ -83,6 +85,11 @@ calls report an unavailable-backend error until it is enabled. `bridge.required`
 requires native live control (disabling the CLI fallback), but does not prevent
 server startup or offline document work.
 
+For a GUI workflow, call `inkscape_start` to launch the configured matched
+application and enable its bridge automatically. Use `inkscape_shutdown` when
+finished, or `inkscape_release` to leave it with the user. Modified documents
+are saved as SVG copies under `document_root` by default on shutdown.
+
 For complete operator guidance and examples, see [USER_MANUAL.md](USER_MANUAL.md).
 
 ## Configuration
@@ -119,13 +126,15 @@ The local stdio example has this bridge and document-access structure:
     "tcp_host": "127.0.0.1",
     "tcp_port": 61779,
     "timeout_seconds": 30.0,
-    "required": false
+    "required": false,
+    "auto_enable": true
   },
   "stdio": {
     "document_root": "./mcpinkscape-library",
     "allow_document_write": true,
     "allow_snapshots": true,
-    "allow_live_control": true
+    "allow_live_control": true,
+    "allow_application_control": true
   }
 }
 ```

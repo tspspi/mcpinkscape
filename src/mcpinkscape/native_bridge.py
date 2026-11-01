@@ -96,8 +96,6 @@ class NativeBridgeClient:
         return self.request("bridge.hello", {})
 
     def request(self, method: str, params: dict[str, Any], expected_revision: int | None = None) -> dict[str, Any]:
-        if self._socket is None or self._reader is None:
-            self.connect()
         request_id = uuid.uuid4().hex
         payload: dict[str, Any] = {
             "type": "request",
@@ -113,6 +111,8 @@ class NativeBridgeClient:
             raise LiveBackendUnavailableError("native bridge request exceeds 1 MiB limit")
         with self._lock:
             try:
+                if self._socket is None or self._reader is None:
+                    self.connect()
                 assert self._socket is not None
                 assert self._reader is not None
                 self._socket.sendall(encoded)
@@ -146,6 +146,10 @@ class NativeBridgeClient:
             except LiveBackendUnavailableError:
                 self.close()
                 raise
+            finally:
+                # Release the serialized native listener between requests.
+                # Idle MCP clients must not block a second or restarted server.
+                self.close()
 
     def _validate_endpoint(self) -> None:
         try:

@@ -149,5 +149,7 @@ def test_remote_http_hides_tools_disallowed_by_key_policy(tmp_path):
             assert "create_document" not in listed.text
             assert "render_snapshot" not in listed.text
             assert "live_set_style" not in listed.text
+            assert "inkscape_start" not in listed.text
+            assert "inkscape_shutdown" not in listed.text
     finally:
         state.close()

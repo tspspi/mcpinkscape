@@ -1,5 +1,5 @@
 {
-  "base_revision": "189d9eea8fea7b8831f507214a1706f2bfddb491",
+  "base_revision": "7449553479fc87907b0479f205a9056a9db57352",
   "sha256": {
     "CMakeLists.txt": "bc68e0bfda559bd95d5dfaa3e9b44d8adae8fb6b9899ecfc5e6800ae3e2cd9f2",
     "cmake-overlay.cmake": "d2d1cdebb1f3120b09b40e9de38d97c34343803d72234623049e16a5f62c1c3f",
@@ -7,7 +7,7 @@
     "mcpinkscape-bridge-stop.inx": "ef202bf908351017a99eb8bf6f402f7c72c69eb548cbc32bd1862e81f39e90d1",
     "mcpinkscape-bridge-status.inx": "e609b505f84301a6f61bec8daad47c187907e69b1ade365750d807f0b3837c72",
     "src/bridge_json.h": "ec871d65d52345fd3fedf403cf9ebf0ae233889096b019251effeb4c94c63b4c",
-    "src/mcpinkscape_bridge.cpp": "4b9698e9b9a57895d2c19f9c26858d44eaba1759ecb97d65bb152b29cd81f986",
+    "src/mcpinkscape_bridge.cpp": "4c419fef74ca66d027a848b91011df3a77c02644e7b6cdd8e1fa3035ec84357e",
     "LICENSE.md": "f3eb578eac52567cac031ed76cdc8d8ecdb960715941d30677641b917e155aa5"
   }
 }
