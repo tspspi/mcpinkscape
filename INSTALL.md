@@ -4,7 +4,7 @@ The native build entry points produce Inkscape and the mcpInkscape bridge as one
 
 The Python MCP server remains a separate installation; see [README.md](README.md) for its configuration. Installing the native application does not start a bridge listener. On Unix, the MCP server enables the bridge on demand by default. `inkscape_start` launches the configured matched application and enables its bridge without a menu action. The Extensions menu still provides manual Start/Stop/Status controls.
 
-FreeBSD and Ubuntu builds have been tested with the GUI and native bridge. FreeBSD installation on a clean system has not yet been tested. Windows support is experimental and untested.
+FreeBSD 15.1 amd64 and Ubuntu 26.04 x86_64 have been tested in clean virtual machines, including the GUI/native bridge, installation, upgrade, rollback, removal, and relocation. Windows support is experimental and untested.
 
 ## FreeBSD
 
@@ -19,6 +19,18 @@ The local slave port reuses `graphics/inkscape` and builds the editor and bridge
 This package owns the normal Inkscape installation paths and conflicts with the ordinary `inkscape` package. It does not forcibly remove an existing installation; use the normal ports/pkg replacement procedure when switching variants. Remove the combined package with `pkg delete inkscape-mcpinkscape`. Do not mix the bridge from this package with another Inkscape build.
 
 Maintainers can use the normal `make stage`, `make check-plist`, and `make package` targets. The port payload is self-contained: end users do not need this repository after copying the directory.
+
+To verify an installed package from this repository, use the Python MCP environment
+with its development dependencies, plus Xvfb, gdbus, dbus-run-session, and libXtst.
+Run the common Unix verifier as a regular user:
+
+```sh
+python3 packaging/verify_mcp_lifecycle.py /usr/local/bin/inkscape \
+  --output build/freebsd-verification.json
+```
+
+It creates a private display, session bus, profile, and disposable documents for
+the lifecycle, targeting, inspection, layers, and atomic-batch checks.
 
 ## Linux
 
