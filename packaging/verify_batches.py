@@ -20,9 +20,9 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def history_key(display_name, pid, redo=False):
+def history_key(display_name, pid, redo=False, title="batch.svg"):
     # Window ownership is checked before sending keys on the private display.
-    focus_fixture_window(display_name, pid, "batch.svg")
+    focus_fixture_window(display_name, pid, title)
     x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
     xtst = ctypes.CDLL(ctypes.util.find_library("Xtst"))
     pointer = ctypes.c_void_p

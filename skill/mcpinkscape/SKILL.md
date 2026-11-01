@@ -63,6 +63,21 @@ geometric and visual bounds when stroke or filters affect spacing; text bounds
 come from Inkscape's layout. Effective style fields cover paint, opacity, and
 basic typography rather than every CSS property.
 
+For precise live layouts, use `live_align_objects` and `live_distribute_objects`
+with the same explicit target/revision. Pick `bounds: "visual"` for visible
+stroke/filter spacing, or `"geometric"` for shape geometry. Axis x starts/ends
+are left/right; y starts/ends are top/bottom. Align to the requested objects'
+combined bounds (`reference: "selection"`), root SVG viewport (`"page"`), or
+an independent fixed `reference_id` (`"object"`). Page refers to the root SVG
+viewport, not a selected page in a multi-page document. Distribution sorts by
+position; automatic edge/center spacing keeps endpoints fixed. An explicit
+`gap` anchors only the first object; specify `unit: "mm"` for physical spacing.
+These calculations use document pixels even inside transformed groups. Inspect
+`moves`/final bounds and render the result. Combine `object.align` and
+`object.distribute` in `live_apply_batch` for one layout undo step. See the
+[tool reference](references/rc1-tools.md) for constraints and a batch example.
+
+
 Create native layers with `live_create_layer`, optionally beneath a parent layer.
 Pass `layer_id` when creating shapes/text, or set the default with
 `live_set_current_layer` and the observed revision. That default also controls

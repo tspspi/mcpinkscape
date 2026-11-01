@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.transforms import Transform
@@ -360,6 +360,14 @@ def _register_tools(server: FastMCP, state: ServerState) -> None:
     @server.tool(name = "live_apply_batch", description = "Apply 1–100 typed edits to one explicit native document at one expected revision, after full prevalidation. Edits commit as one undo step; a no-op preserves history; execution failure rolls back changes. Never replay after a lost response.")
     def live_apply_batch(operations: BatchOperations, instance_id: str, document_id: str, expected_revision: int, ctx: Context = None) -> dict[str, Any]:
         return service(ctx).live_apply_batch(operations, instance_id, document_id, expected_revision)
+
+    @server.tool(name = "live_align_objects", description = "Align geometric or visual bounds along document x/y to start/center/end of the selection bounds, SVG page, or a fixed reference object. Requires explicit document identity and revision; one atomic undo step. Groups and nested transforms are preserved.")
+    def live_align_objects(object_ids: list[str], axis: Literal["x", "y"], alignment: Literal["start", "center", "end"], instance_id: str, document_id: str, expected_revision: int, reference: Literal["selection", "page", "object"] = "selection", reference_id: str | None = None, bounds: Literal["geometric", "visual"] = "geometric", ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_align_objects(object_ids, axis, alignment, instance_id, document_id, expected_revision, reference, reference_id, bounds)
+
+    @server.tool(name = "live_distribute_objects", description = "Distribute native objects along document x/y using equal edge gaps or center spacing, preserving the outer endpoints. An explicit nonnegative gap in px/mm/cm/in/pt/pc anchors the first object and moves the others. Sorts by current bounds; uses one atomic undo step and explicit target/revision.")
+    def live_distribute_objects(object_ids: list[str], axis: Literal["x", "y"], instance_id: str, document_id: str, expected_revision: int, spacing: Literal["gaps", "centers"] = "gaps", gap: float | None = None, unit: Literal["px", "mm", "cm", "in", "pt", "pc"] = "px", bounds: Literal["geometric", "visual"] = "geometric", ctx: Context = None) -> dict[str, Any]:
+        return service(ctx).live_distribute_objects(object_ids, axis, instance_id, document_id, expected_revision, spacing, gap, unit, bounds)
 
     @server.tool(name = "live_get_document_info", description = "Inspect a native document's page, coordinate systems, root attributes, revision, and destination layer.")
     def live_get_document_info(instance_id: str | None = None, document_id: str | None = None, ctx: Context = None) -> dict[str, Any]:

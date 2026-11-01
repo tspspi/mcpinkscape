@@ -31,6 +31,7 @@ def test_mcp_first_startup_bridge_restart_and_gui_relaunch(tmp_path):
     assert evidence["native_integration"]
     assert evidence["active_window_integration"]
     assert evidence["clean_gui_exit"]
+    assert evidence["layout"] and all(evidence["layout"].values())
     assert evidence["atomic_batches"] and all(evidence["atomic_batches"].values())
     assert evidence["live_inspection"] and all(evidence["live_inspection"].values())
     assert evidence["document_targeting"] and all(evidence["document_targeting"].values())

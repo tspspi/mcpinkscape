@@ -11,6 +11,7 @@ arbitrary actions, or supply raw XML. Supported methods are:
 
 - `shape.create`, `text.create`, `text.set`, `layer.create`
 - `object.set_style`, `object.move`, `object.rotate`, `object.scale`
+- `object.align`, `object.distribute`
 - `object.delete`, `object.group`, `object.ungroup`, `object.raise`, `object.lower`
 - `gradient.create`, `gradient.set_stops`, `gradient.apply`
 - `document.set_background`
@@ -54,3 +55,7 @@ For isolated developer verification only, the native application environment can
 set `MCPINKSCAPE_TEST_BATCH_FAIL_AFTER` to an operation count. This injects an
 exception after that many live operations. It is not an MCP argument or tool and
 must not be enabled for ordinary editing.
+
+`object.align` and `object.distribute` are also supported batch entries. See
+[layout parameters and semantics](LAYOUT.md); they use the same detached
+prevalidation, rollback, and grouped history, including dependent creations.

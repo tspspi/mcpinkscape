@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, ValidationError, model_validator
 
 from mcpinkscape.errors import InvalidDrawingValueError
 from mcpinkscape.svg_document import SVGDocument
@@ -51,6 +51,40 @@ class Style(Objects):
 class Move(Objects):
     dx: FiniteFloat
     dy: FiniteFloat
+
+
+class Align(Objects):
+    axis: Literal["x", "y"]
+    alignment: Literal["start", "center", "end"]
+    reference: Literal["selection", "page", "object"] = "selection"
+    reference_id: Identifier | None = None
+    bounds: Literal["geometric", "visual"] = "geometric"
+
+    @model_validator(mode="after")
+    def check_reference(self):
+        if (self.reference == "object") != (self.reference_id is not None):
+            raise ValueError("reference_id is required only for reference='object'")
+        if self.reference_id in self.object_ids:
+            raise ValueError("reference object must not be one of the moved objects")
+        return self
+
+
+class Distribute(Objects):
+    axis: Literal["x", "y"]
+    spacing: Literal["gaps", "centers"] = "gaps"
+    gap: Annotated[FiniteFloat, Field(ge=0)] | None = None
+    unit: Literal["px", "mm", "cm", "in", "pt", "pc"] = "px"
+    bounds: Literal["geometric", "visual"] = "geometric"
+
+    @model_validator(mode="after")
+    def check_spacing(self):
+        if self.spacing == "centers" and self.gap is not None:
+            raise ValueError("gap is only supported with spacing='gaps'")
+        if self.gap is None and self.unit != "px":
+            raise ValueError("unit is only meaningful with an explicit gap")
+        if len(self.object_ids) < (2 if self.gap is not None else 3):
+            raise ValueError("distribution needs three objects, or two with an explicit gap")
+        return self
 
 
 class Rotate(Objects):
@@ -129,6 +163,16 @@ class MoveOperation(Parameters):
     params: Move
 
 
+class AlignOperation(Parameters):
+    method: Literal["object.align"]
+    params: Align
+
+
+class DistributeOperation(Parameters):
+    method: Literal["object.distribute"]
+    params: Distribute
+
+
 class RotateOperation(Parameters):
     method: Literal["object.rotate"]
     params: Rotate
@@ -181,7 +225,7 @@ class BackgroundOperation(Parameters):
 
 BatchOperation = Annotated[
     ShapeOperation | TextOperation | TextSetOperation | StyleOperation | MoveOperation |
-    RotateOperation | ScaleOperation | ObjectsOperation | GroupOperation | UngroupOperation |
+    AlignOperation | DistributeOperation | RotateOperation | ScaleOperation | ObjectsOperation | GroupOperation | UngroupOperation |
     LayerOperation | GradientOperation | GradientStopsOperation | GradientApplyOperation | BackgroundOperation,
     Field(discriminator="method"),
 ]

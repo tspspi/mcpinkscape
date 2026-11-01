@@ -33,6 +33,8 @@ from mcpinkscape.svg_document import SVGDocument
 # the request implementation.
 NATIVE_TOOL_METHODS: dict[str, str] = {
     "live_apply_batch": "document.batch",
+    "live_align_objects": "object.align",
+    "live_distribute_objects": "object.distribute",
     "live_get_document_info": "document.info",
     "live_get_object": "object.inspect",
     "live_list_layers": "layer.list",
@@ -585,6 +587,31 @@ class InkscapeService:
             raise InvalidDrawingValueError("batch request exceeds 256 KiB")
         return {"backend": "native_uds", **self._native_request("document.batch", {"operations": normalized}, expected_revision,
                 instance_id=instance_id, document_id=document_id)}
+
+    def _live_layout(self, method: str, params: dict[str, Any], instance_id: str, document_id: str, expected_revision: int) -> dict[str, Any]:
+        if self._document_target(instance_id, document_id) is None or isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or not 0 <= expected_revision <= 9007199254740991:
+            raise InvalidDrawingValueError("layout requires an explicit native target and non-negative integer expected_revision")
+        normalized = validate_operations([{"method": method, "params": params}])[0]["params"]
+        result = self._native_request(method, normalized, expected_revision,
+                instance_id=instance_id, document_id=document_id)
+        detail = result.get("operation_results", [{}])[0]
+        return {"backend": "native_uds", **detail, **result}
+
+    def live_align_objects(self, object_ids: list[str], axis: str, alignment: str, instance_id: str, document_id: str,
+                           expected_revision: int, reference: str = "selection", reference_id: str | None = None,
+                           bounds: str = "geometric") -> dict[str, Any]:
+        params = {"object_ids": object_ids, "axis": axis, "alignment": alignment, "reference": reference, "bounds": bounds}
+        if reference_id is not None:
+            params["reference_id"] = reference_id
+        return self._live_layout("object.align", params, instance_id, document_id, expected_revision)
+
+    def live_distribute_objects(self, object_ids: list[str], axis: str, instance_id: str, document_id: str,
+                                expected_revision: int, spacing: str = "gaps", gap: float | None = None,
+                                unit: str = "px", bounds: str = "geometric") -> dict[str, Any]:
+        params = {"object_ids": object_ids, "axis": axis, "spacing": spacing, "unit": unit, "bounds": bounds}
+        if gap is not None:
+            params["gap"] = gap
+        return self._live_layout("object.distribute", params, instance_id, document_id, expected_revision)
 
     def live_get_document_info(self, instance_id: str | None = None, document_id: str | None = None) -> dict[str, Any]:
         return {"backend": "native_uds", **self._native_request("document.info", {}, instance_id=instance_id, document_id=document_id)}

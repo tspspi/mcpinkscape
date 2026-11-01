@@ -16,6 +16,7 @@ to its policy. This catalog describes the RC1 families.
 | Active window | `live_status`, `live_select`, `live_set_style`, `live_move`, `live_rotate`, `live_scale`, `live_render_snapshot`, and native-only `live_poll_changes` |
 | Native document targets | `live_list_documents`; pass its `instance_id` and `document_id` together to subsequent live tools |
 | Atomic native edits | `live_apply_batch` (explicit target/revision, 1–100 typed operations, 256 KiB, one undo step) |
+| Native layout | `live_align_objects`, `live_distribute_objects` (explicit target/revision, geometric or visual bounds, atomic undo) |
 | Native inspection and layers | `live_get_document_info`, `live_get_object`, `live_list_layers`, `live_create_layer`, `live_set_current_layer` |
 | Native live drawing | `live_list_objects`, `live_create_shape`, `live_create_text`, `live_set_text`, `live_set_page_background`, `live_create_gradient`, `live_set_gradient_stops`, `live_apply_gradient`, `live_import_image`, `live_duplicate_objects`, `live_delete_objects`, `live_group_objects`, `live_ungroup_objects` (discoverable before connection in native/auto mode, then filtered by negotiated methods) |
 
@@ -59,7 +60,7 @@ inspect the live document rather than replaying a stale edit.
 
 Native batch entries use `{method, params}` with the supported protocol method
 names: `shape.create`, `text.create`, `text.set`, `layer.create`,
-`object.set_style`, `object.move`, `object.rotate`, `object.scale`, `object.delete`,
+`object.align`, `object.distribute`, `object.set_style`, `object.move`, `object.rotate`, `object.scale`, `object.delete`,
 `object.group`, `object.ungroup`, `object.raise`, `object.lower`, `gradient.create`,
 `gradient.set_stops`, `gradient.apply`, and `document.set_background`. Supply
 explicit IDs for creation. Style keys use the typed tool names (for example,
@@ -69,3 +70,39 @@ Each batch with edits has one revision and one undo entry; no-op batches retain
 revision and undo/redo history. inspect the returned
 operation receipts and render before accepting the result. On transport loss,
 inspect state rather than replaying the batch.
+
+
+## Precise native layout
+
+Align: `object_ids`, `axis` x/y, `alignment` start/center/end, `reference`
+selection/page/object, optional `reference_id` only for object, `bounds`
+geometric/visual. A reference object stays fixed and cannot overlap the movers
+through ancestry. Selection reference means the requested IDs' combined bounds.
+Page reference means the root SVG viewport in document pixels.
+
+Distribute: `object_ids`, `axis`, `spacing` gaps/centers, optional nonnegative
+`gap` for gaps only, `unit` px/mm/cm/in/pt/pc, `bounds` geometric/visual. Units
+other than px require an explicit gap. At least three IDs are required without
+a gap, two with one. Sort is spatial and stable for ties, preserving tree order.
+Automatic spacing keeps first/last fixed (automatic gaps can be negative for
+overlapping objects); explicit gaps anchor the first and can extend the layout
+past the page. No automatic grid snapping. Movers must have finite visible
+bounds and be unlocked, with no ancestor/descendant pairs or duplicate IDs.
+Noninvertible parent transforms reject required movement. Differences within
+1e-9 document pixels count as zero. Identity operations preserve revision and
+undo/redo history. The same operations work on earlier-created batch objects.
+
+For “top-align panels with 8 mm clear gaps,” issue one `live_apply_batch` with
+both target IDs and the observed revision:
+
+```json
+[
+  {"method":"object.align","params":{"object_ids":["left","middle","right"],"axis":"y","alignment":"start","bounds":"visual"}},
+  {"method":"object.distribute","params":{"object_ids":["left","middle","right"],"axis":"x","gap":8,"unit":"mm","bounds":"visual"}}
+]
+```
+
+Individual tool receipts expose `moves` (IDs, dx/dy, before/after document-pixel
+bounds), `changed`, revision, and resolved spacing. In a batch, inspect each
+`operation_results` entry and then measure/render the final state. Read the
+bridge method list before using these tools with an older running extension.

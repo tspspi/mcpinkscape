@@ -151,6 +151,19 @@ the destination require `expected_revision`. Setting the destination preserves
 the selection and does not create an SVG edit or undo entry. Inspect and render
 the result with the same document target.
 
+Use `live_align_objects` to align starts, centers, or ends along document x/y,
+relative to the requested objects' combined bounds, the root SVG page, or an
+independent fixed object. Use `live_distribute_objects` for equal edge gaps,
+equal center distances, or an explicit gap such as `gap: 8, unit: "mm"`.
+Both require explicit document target IDs and `expected_revision`. Choose
+`bounds: "visual"` when strokes should count toward alignment or spacing;
+`"geometric"` is the default. Nested groups/transforms and laid-out text are
+handled in document pixels. Distribution sorts by position; automatic spacing
+keeps the endpoints fixed, while an explicit gap anchors only the first object.
+These are atomic operations with one undo step, preserving selection and focus.
+See [layout semantics and receipts](native/LAYOUT.md) for reference rules, page
+scope, units, rejected targets, and batch examples.
+
 For an edit sequence that must succeed together, use native `live_apply_batch`.
 Supply both document target IDs, the current `expected_revision`, and 1–100 typed
 `operations` within a 256 KiB request. Each entry has a `method` and typed `params`.
@@ -174,7 +187,7 @@ back changes, selection, modified state, and revision without clearing existing
 redo history. If the batch deletes the destination layer, the root becomes the
 new destination.
 
-Batches support native shape/text/layer creation, text/style changes, transforms,
+Batches support native shape/text/layer creation, text/style changes, transforms, alignment/distribution,
 delete/group/ungroup/stacking, gradients, and page background. Image import,
 duplication, selection, and choosing the destination layer remain separate tools.
 See [the batch protocol](native/ATOMIC_BATCHES.md) for the supported method names.

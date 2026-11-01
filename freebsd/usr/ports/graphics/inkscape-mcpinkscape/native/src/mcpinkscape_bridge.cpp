@@ -266,6 +266,8 @@ struct GradientStop {
     std::string opacity;
 };
 
+bool valid_identifier(std::string const &value);
+
 class GuiExecutor final {
 public:
     std::optional<std::string> apply_batch(std::vector<std::string> requests, std::uint64_t expected_revision)
@@ -992,6 +994,144 @@ public:
                 ids += json_string(object_ids[index]);
             }
             return std::string("{\"revision\":") + std::to_string(next_revision) + ",\"changed_ids\":" + ids + "]}";
+        });
+    }
+
+    // Called only inside apply_batch: standalone layout also uses its detached
+    // preflight, rollback journal, selection restoration and no-op undo handling.
+    std::optional<std::string> layout(bool distribute, mcpinkscape::json::Value params)
+    {
+        return execute([this, distribute, params = std::move(params)] {
+            auto *document = request_document();
+            document->ensureUpToDate();
+            auto fail = [](std::string const &message) { throw std::runtime_error(message); };
+            auto option = [&](char const *key, std::string fallback, std::set<std::string> const &choices) {
+                auto const *value = params.get(key);
+                if (value && value->type != mcpinkscape::json::Value::Type::string) fail(std::string(key) + " must be a string");
+                auto result = value ? value->string : fallback;
+                if (!choices.contains(result)) fail(std::string("invalid ") + key);
+                return result;
+            };
+            auto axis = option("axis", "", {"x", "y"});
+            auto bounds = option("bounds", "geometric", {"geometric", "visual"});
+            auto alignment = distribute ? "" : option("alignment", "", {"start", "center", "end"});
+            auto reference = distribute ? "selection" : option("reference", "selection", {"selection", "page", "object"});
+            auto spacing = distribute ? option("spacing", "gaps", {"gaps", "centers"}) : "";
+            auto unit = distribute ? option("unit", "px", {"px", "mm", "cm", "in", "pt", "pc"}) : "px";
+            std::set<std::string> fields = distribute ? std::set<std::string>{"object_ids","axis","bounds","spacing","gap","unit"} :
+                std::set<std::string>{"object_ids","axis","bounds","alignment","reference","reference_id"};
+            for (auto const &[key, value] : params.object) if (!fields.contains(key)) fail("unknown layout parameter: " + key);
+            std::optional<double> gap;
+            if (auto const *value = params.get("gap")) {
+                if (value->type != mcpinkscape::json::Value::Type::number || !std::isfinite(value->number) || value->number < 0 || spacing != "gaps") fail("gap must be nonnegative and requires gaps spacing");
+                std::map<std::string, double> const units = {{"px",1},{"mm",96.0/25.4},{"cm",96.0/2.54},{"in",96},{"pt",96.0/72},{"pc",16}};
+                gap = value->number * units.at(unit);
+                if (!std::isfinite(*gap)) fail("gap overflows document coordinates");
+            }
+            if (!gap && unit != "px") fail("unit requires an explicit gap");
+            auto const *ids = params.get("object_ids");
+            if (!ids || ids->type != mcpinkscape::json::Value::Type::array || ids->array.empty() || ids->array.size() > 1000) fail("layout requires 1 through 1000 object IDs");
+            if (distribute && ids->array.size() < (gap ? 2u : 3u)) fail("distribution needs three objects, or two with an explicit gap");
+            struct Entry { std::string id; SPItem *item; Geom::Rect box; double delta = 0; double tx = 0; double ty = 0; };
+            std::vector<Entry> entries;
+            std::set<std::string> seen;
+            auto box_for = [&](SPItem *item) {
+                if (!item || item == document->getRoot() || item->isHidden()) fail("layout requires visible drawable objects below the SVG root");
+                for (auto *ancestor = item->parent; ancestor; ancestor = ancestor->parent) {
+                    if (auto *parent_item = dynamic_cast<SPItem *>(ancestor); parent_item && parent_item->isHidden()) fail("layout object belongs to a hidden ancestor");
+                }
+                auto box = bounds == "visual" ? item->documentVisualBounds() : item->documentGeometricBounds();
+                if (!box || !std::isfinite(box->left()) || !std::isfinite(box->top()) || !std::isfinite(box->right()) || !std::isfinite(box->bottom())) fail("layout object has no finite bounds");
+                return *box;
+            };
+            for (auto const &id : ids->array) {
+                if (id.type != mcpinkscape::json::Value::Type::string || !valid_identifier(id.string) || !seen.insert(id.string).second) fail("layout object IDs must be unique valid identifiers");
+                auto *item = dynamic_cast<SPItem *>(document->getObjectById(id.string));
+                auto box = box_for(item);
+                for (SPObject *ancestor = item; ancestor; ancestor = ancestor->parent) {
+                    auto const *locked = ancestor->getRepr() ? ancestor->getRepr()->attribute("sodipodi:insensitive") : nullptr;
+                    if (locked && std::string(locked) == "true") fail("layout cannot move a locked object or its descendants");
+                }
+                for (auto const &entry : entries) if (item->isAncestorOf(entry.item) || entry.item->isAncestorOf(item)) fail("layout targets must not overlap through ancestry");
+                entries.push_back({id.string, item, box});
+            }
+            auto low = [&](Geom::Rect const &box) { return axis == "x" ? box.left() : box.top(); };
+            auto high = [&](Geom::Rect const &box) { return axis == "x" ? box.right() : box.bottom(); };
+            auto center = [&](Geom::Rect const &box) { return low(box)/2 + high(box)/2; };
+            auto anchor = [&](Geom::Rect const &box) { return alignment == "start" ? low(box) : alignment == "end" ? high(box) : center(box); };
+            double resolved_gap = 0;
+            if (!distribute) {
+                auto reference_box = entries.front().box;
+                auto const *reference_id = params.get("reference_id");
+                if ((reference == "object") != (reference_id != nullptr)) fail("reference_id is required only for object reference");
+                if (reference == "object") {
+                    if (reference_id->type != mcpinkscape::json::Value::Type::string || !valid_identifier(reference_id->string)) fail("reference_id must be a valid identifier");
+                    auto *item = dynamic_cast<SPItem *>(document->getObjectById(reference_id->string));
+                    reference_box = box_for(item);
+                    for (auto const &entry : entries) if (item == entry.item || item->isAncestorOf(entry.item) || entry.item->isAncestorOf(item)) fail("reference object must be independent of all moved objects");
+                } else if (reference == "page") {
+                    // The root SVG viewport, in the same document-pixel space
+                    // as documentGeometricBounds; independent of window focus.
+                    auto *root = document->getRoot();
+                    reference_box = Geom::Rect(Geom::Point(0,0), Geom::Point(root->width.computed, root->height.computed));
+                } else {
+                    for (auto const &entry : entries) reference_box.unionWith(entry.box);
+                }
+                for (auto &entry : entries) entry.delta = anchor(reference_box) - anchor(entry.box);
+            } else {
+                std::stable_sort(entries.begin(), entries.end(), [&](auto const &a, auto const &b) {
+                    return spacing == "centers" ? center(a.box) < center(b.box) : low(a.box) < low(b.box);
+                });
+                auto const count = entries.size();
+                if (spacing == "centers") {
+                    resolved_gap = (center(entries.back().box) - center(entries.front().box)) / (count-1);
+                    for (std::size_t i=1; i+1<count; ++i) entries[i].delta = center(entries.front().box) + i*resolved_gap - center(entries[i].box);
+                } else {
+                    double widths = 0;
+                    for (auto const &entry : entries) widths += high(entry.box)-low(entry.box);
+                    resolved_gap = gap ? *gap : (high(entries.back().box)-low(entries.front().box)-widths)/(count-1);
+                    double cursor = high(entries.front().box) + resolved_gap;
+                    for (std::size_t i=1; i<count; ++i) {
+                        if (gap || i+1<count) entries[i].delta = cursor - low(entries[i].box);
+                        cursor += high(entries[i].box)-low(entries[i].box)+resolved_gap;
+                    }
+                }
+            }
+            // Validate every parent inverse and resulting affine before any XML
+            // write. Translate in document space without scaling strokes/text.
+            for (auto &entry : entries) {
+                if (!std::isfinite(entry.delta)) fail("layout movement overflows document coordinates");
+                if (std::abs(entry.delta) <= 1e-9) { entry.delta = 0; continue; }
+                auto *parent = dynamic_cast<SPItem *>(entry.item->parent);
+                if (!parent) fail("layout object has no drawable parent");
+                auto p = parent->i2doc_affine();
+                auto determinant = p[0]*p[3]-p[1]*p[2];
+                if (!std::isfinite(determinant) || determinant == 0) fail("layout cannot invert a singular parent transform");
+                double dx = axis == "x" ? entry.delta : 0, dy = axis == "y" ? entry.delta : 0;
+                entry.tx = (p[3]*dx-p[2]*dy)/determinant;
+                entry.ty = (-p[1]*dx+p[0]*dy)/determinant;
+                if (!std::isfinite(entry.tx) || !std::isfinite(entry.ty) || !std::isfinite(entry.item->transform[4]+entry.tx) || !std::isfinite(entry.item->transform[5]+entry.ty)) fail("layout translation is not finite");
+            }
+            std::string moves = "[", changed = "[";
+            for (auto const &entry : entries) {
+                if (moves.size()>1) moves += ",";
+                auto after = entry.box;
+                after += Geom::Point(axis == "x" ? entry.delta : 0, axis == "y" ? entry.delta : 0);
+                moves += "{\"object_id\":" + json_string(entry.id) + ",\"dx\":" + number_json(axis == "x" ? entry.delta : 0) + ",\"dy\":" + number_json(axis == "y" ? entry.delta : 0) +
+                    ",\"before\":" + bounds_json(entry.box) + ",\"after\":" + bounds_json(after) + "}";
+                if (!entry.delta) continue;
+                auto transform = entry.item->transform;
+                transform[4] += entry.tx; transform[5] += entry.ty;
+                std::string matrix = "matrix(";
+                for (int i=0; i<6; ++i) { if (i) matrix += ","; matrix += number_json(transform[i]); }
+                matrix += ")";
+                entry.item->getRepr()->setAttribute("transform", matrix.c_str());
+                if (changed.size()>1) changed += ",";
+                changed += json_string(entry.id);
+            }
+            document->ensureUpToDate();
+            return "{\"bounds_space\":\"document_px\",\"bounds\":" + json_string(bounds) + ",\"axis\":" + json_string(axis) +
+                ",\"resolved_spacing_px\":" + (distribute ? number_json(resolved_gap) : "null") + ",\"moves\":" + moves + "],\"changed_ids\":" + changed + "]}";
         });
     }
 
@@ -1896,7 +2036,7 @@ std::string response_for_request_impl(std::string const &line)
             "\"document_targeting\":true,\"instance_id\":" + json_string(native_instance_id()) + ","
             "\"pid\":" + std::to_string(application_pid()) + ",\"managed_session_id\":" + json_string(managed_session_id()) + ","
             "\"inkscape_version\":\"" + std::string(Inkscape::version_string) + "\","
-            "\"running\":true,\"methods\":[\"document.batch\",\"document.info\",\"object.inspect\",\"layer.list\",\"layer.create\",\"layer.set_current\",\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
+            "\"running\":true,\"methods\":[\"document.batch\",\"object.align\",\"object.distribute\",\"document.info\",\"object.inspect\",\"layer.list\",\"layer.create\",\"layer.set_current\",\"document.list\",\"application.status\",\"application.shutdown\",\"bridge.hello\",\"bridge.status\",\"bridge.ping\",\"document.revision\",\"document.poll_changes\",\"document.set_background\",\"object.list\",\"selection.get\",\"selection.set\",\"object.set_style\",\"object.delete\",\"object.duplicate\",\"object.group\",\"object.ungroup\",\"object.raise\",\"object.lower\",\"shape.create\",\"text.create\",\"text.set\",\"gradient.create\",\"gradient.set_stops\",\"gradient.apply\",\"image.import\",\"object.move\",\"object.rotate\",\"object.scale\",\"snapshot.render\",\"snapshot.release\"]}}\n";
     }
     if (application_shutdown_pending.load()) return error_response(id->string, "application_closing", "application shutdown has been accepted");
     if (method->string == "application.status") {
@@ -1939,6 +2079,19 @@ std::string response_for_request_impl(std::string const &line)
         if (!result) return error_response(id->string, "gui_timeout", "Inkscape GUI did not service request within 5 seconds");
         return "{\"type\":\"response\",\"id\":\"" + id->string + "\",\"ok\":true,\"result\":" + *result + "}\n";
     }
+    if (method->string == "object.align" || method->string == "object.distribute") {
+        auto revision = expected_revision_of(&*request);
+        if (!revision || (!batch_document && !requested_target)) return error_response(id->string, "invalid_request", "layout requires an explicit document target and expected_revision");
+        if (batch_document) return mutation_response(id->string, gui_executor.layout(method->string == "object.distribute", *params));
+        // Use exactly the same transaction path for individual and batched layouts.
+        auto result = gui_executor.apply_batch({line}, *revision);
+        if (result && result->starts_with("{\"error\":")) {
+            std::string parse_error;
+            auto error = mcpinkscape::json::Parser(*result).parse(parse_error);
+            return "{\"type\":\"response\",\"id\":" + json_string(id->string) + ",\"ok\":false,\"error\":" + json_value(*error->get("error")) + "}\n";
+        }
+        return mutation_response(id->string, result);
+    }
     if (method->string == "document.batch") {
         auto const *operations = params->get("operations");
         auto expected_revision = expected_revision_of(&*request);
@@ -1952,6 +2105,8 @@ std::string response_for_request_impl(std::string const &line)
             {"text.set", {"object_id","text"}},
             {"object.set_style", {"object_ids","style"}},
             {"object.move", {"object_ids","dx","dy"}},
+            {"object.align", {"object_ids","axis","alignment","reference","reference_id","bounds"}},
+            {"object.distribute", {"object_ids","axis","spacing","gap","unit","bounds"}},
             {"object.rotate", {"object_ids","degrees"}},
             {"object.scale", {"object_ids","scale_x","scale_y"}},
             {"object.delete", {"object_ids"}},

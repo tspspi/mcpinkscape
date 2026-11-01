@@ -25,7 +25,7 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-async def check(executable, temporary, log):
+async def check(executable, temporary, log, layout_only=False):
     from fastmcp import Client
     from mcpinkscape.app.server import build_server
     from mcpinkscape.config.schema import AccessConfig, BridgeConfig, Config
@@ -140,8 +140,13 @@ asyncio.run(run())
             await client.call_tool("create_document", {"name": "offline-before-gui"})
             unavailable = await client.call_tool("live_list_objects", {}, raise_on_error=False)
             require(unavailable.is_error, "Live call unexpectedly succeeded without GUI")
+            if layout_only:
+                from verify_layout import verify_layout
+                return {"layout_only": True, "layout": await verify_layout(client, state, env, activate)}
             from verify_batches import verify_batches
             batch_checks = await verify_batches(client, state, env, activate)
+            from verify_layout import verify_layout
+            layout_checks = await verify_layout(client, state, env, activate)
             from verify_live_inspection import verify_live_inspection
             inspection_checks = await verify_live_inspection(client, state)
             from verify_document_targets import verify_document_targets
@@ -257,7 +262,7 @@ asyncio.run(run())
             activate("quit-immediate")
             require(application.wait(timeout=15) == 0, "Relaunched GUI did not exit normally")
             application = None
-        return {"atomic_batches": batch_checks, "live_inspection": inspection_checks, "document_targeting": target_checks, "mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
+        return {"layout": layout_checks, "atomic_batches": batch_checks, "live_inspection": inspection_checks, "document_targeting": target_checks, "mcp_before_gui": True, "offline_before_gui": True, "late_bridge_connection": True,
                 "automatic_startup": True, "stdio_fresh_start": True, "startup_document": True,
                 "automatic_bridge_activation": True, "gui_before_mcp": True,
                 "bridge_restart": True, "mcp_process_restart": True, "gui_crash_recovery": True,
@@ -300,6 +305,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("executable", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--layout-only", action="store_true", help="Run only the isolated native layout checks")
     parser.add_argument("--inside-session", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     require(os.name != "nt", "This verifier requires Unix Xvfb and D-Bus")
@@ -309,11 +315,12 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     if not args.inside_session:
         subprocess.run(["dbus-run-session", "--", sys.executable, str(Path(__file__).resolve()),
-                        str(executable), "--output", str(output), "--inside-session"], check=True)
+                        str(executable), "--output", str(output), "--inside-session"] +
+                       (["--layout-only"] if args.layout_only else []), check=True)
         return
     with tempfile.TemporaryDirectory(prefix="mcp-lifecycle-") as temporary:
         with output.with_suffix(".log").open("w") as log:
-            result = asyncio.run(check(executable, Path(temporary), log))
+            result = asyncio.run(check(executable, Path(temporary), log, layout_only=args.layout_only))
     output.write_text(json.dumps(result, indent=2) + "\n")
 
 
