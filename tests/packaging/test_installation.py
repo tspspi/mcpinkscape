@@ -235,3 +235,20 @@ def test_overlay_rejects_incompatible_core(tmp_path, version, kind, message):
     result, *_ = configure_fixture(tmp_path, version=version, kind=kind)
     assert result.returncode != 0
     assert message in result.stderr
+
+
+@pytest.mark.skipif(not shutil.which("cmake") or os.name == "nt", reason="Unix CMake runtime fixture")
+def test_incremental_bridge_rebuild_updates_installed_source_provenance(tmp_path):
+    result, source, overlay, build, stage = configure_fixture(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run(["cmake", "--build", str(build)], check=True, capture_output=True)
+    bridge = overlay / "src/mcpinkscape_bridge.cpp"
+    bridge.write_text(bridge.read_text().replace("return core_value();", "return core_value() + 1;"))
+    subprocess.run(["cmake", "--build", str(build)], check=True, capture_output=True)
+    subprocess.run(["cmake", "--install", str(build)], check=True, capture_output=True)
+    module = stage / "share/inkscape/extensions/libmcpinkscape_bridge.so"
+    subprocess.run([sys.executable, "-c",
+                    "import ctypes,sys; assert ctypes.CDLL(sys.argv[1]).bridge_value() == 43", str(module)],
+                   check=True, capture_output=True)
+    info = (stage / "share/inkscape/mcpinkscape/build-info.txt").read_text()
+    assert f"SHA256 src/mcpinkscape_bridge.cpp: {driver.digest(bridge)}" in info

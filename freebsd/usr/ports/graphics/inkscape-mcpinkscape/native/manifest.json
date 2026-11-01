@@ -1,7 +1,7 @@
 {
-  "base_revision": "df07d9084a50e0690f1d7048bd2658d3ca6489a6",
+  "base_revision": "568d5c3c207201ba47a402dc3fe0921b21b801f3",
   "sha256": {
-    "CMakeLists.txt": "bc68e0bfda559bd95d5dfaa3e9b44d8adae8fb6b9899ecfc5e6800ae3e2cd9f2",
+    "CMakeLists.txt": "0d3024c68f296729facd69a4c8c6e0ae965ec70699118108b103e53f1408c948",
     "cmake-overlay.cmake": "d2d1cdebb1f3120b09b40e9de38d97c34343803d72234623049e16a5f62c1c3f",
     "mcpinkscape-bridge-start.inx": "9f84405af737e1c64b2bbbfad78d7a160c95f4456e35899a6a77ed93df0998fa",
     "mcpinkscape-bridge-stop.inx": "ef202bf908351017a99eb8bf6f402f7c72c69eb548cbc32bd1862e81f39e90d1",

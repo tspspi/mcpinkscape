@@ -74,6 +74,10 @@ file(WRITE "${_mcpinkscape_build_info}"
 foreach(_mcpinkscape_input IN ITEMS CMakeLists.txt cmake-overlay.cmake
         src/mcpinkscape_bridge.cpp src/bridge_json.h
         mcpinkscape-bridge-start.inx mcpinkscape-bridge-stop.inx mcpinkscape-bridge-status.inx)
+    # Hash inputs are configure dependencies too: an incremental native-only
+    # build must regenerate the provenance installed beside the new binary.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_LIST_DIR}/${_mcpinkscape_input}")
     file(SHA256 "${CMAKE_CURRENT_LIST_DIR}/${_mcpinkscape_input}" _mcpinkscape_hash)
     file(APPEND "${_mcpinkscape_build_info}" "SHA256 ${_mcpinkscape_input}: ${_mcpinkscape_hash}\n")
 endforeach()
