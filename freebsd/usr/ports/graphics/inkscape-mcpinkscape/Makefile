@@ -18,6 +18,20 @@ PLIST_FILES+=	share/inkscape/extensions/libmcpinkscape_bridge.so \
 		share/inkscape/mcpinkscape/port-inputs.json \
 		share/inkscape/mcpinkscape/LICENSE.md
 
+# Register hooks before the parent includes bsd.port.mk and builds its phase lists.
+pre-configure:
+	@test -f ${MCPINKSCAPE_OVERLAY_DIR}/src/mcpinkscape_bridge.cpp || \
+		(${ECHO_MSG} "Missing native payload: use the complete distributed port directory"; exit 1)
+	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS}
+
+pre-build:
+	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS} --build
+
+post-stage:
+	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS} --verify
+	${INSTALL_DATA} ${WRKDIR}/mcpinkscape-port-inputs.json \
+		${STAGEDIR}${DATADIR}/mcpinkscape/port-inputs.json
+
 .include "${MASTERDIR}/Makefile"
 
 MAINTAINER=	pypipackages01@tspi.at
@@ -33,16 +47,3 @@ MCPINKSCAPE_INFO_ARGS=	--port ${.CURDIR:Q} --parent ${MASTERDIR:Q} \
 .for _mcpinkscape_patch in ${EXTRA_PATCHES}
 MCPINKSCAPE_INFO_ARGS+=	--extra-patch ${_mcpinkscape_patch:Q}
 .endfor
-
-pre-configure:
-	@test -f ${MCPINKSCAPE_OVERLAY_DIR}/src/mcpinkscape_bridge.cpp || \
-		(${ECHO_MSG} "Missing native payload: use the complete distributed port directory"; exit 1)
-	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS}
-
-pre-build:
-	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS} --build
-
-post-stage:
-	@${PYTHON_CMD} ${.CURDIR}/files/freebsd_build_info.py ${MCPINKSCAPE_INFO_ARGS} --verify
-	${INSTALL_DATA} ${WRKDIR}/mcpinkscape-port-inputs.json \
-		${STAGEDIR}${DATADIR}/mcpinkscape/port-inputs.json

@@ -252,3 +252,61 @@ def test_incremental_bridge_rebuild_updates_installed_source_provenance(tmp_path
                    check=True, capture_output=True)
     info = (stage / "share/inkscape/mcpinkscape/build-info.txt").read_text()
     assert f"SHA256 src/mcpinkscape_bridge.cpp: {driver.digest(bridge)}" in info
+
+
+@pytest.mark.skipif(not (shutil.which("bmake") or sys.platform.startswith("freebsd")), reason="BSD make include-time hook registration")
+def test_slave_port_hooks_run_when_parent_discovers_phases_during_include(tmp_path):
+    make = shutil.which("bmake") or shutil.which("make")
+    tree = tmp_path / "ports"
+    parent = tree / "graphics/inkscape"
+    parent.mkdir(parents=True)
+    (parent / "files").mkdir()
+    (parent / "distinfo").write_text("locked upstream source\n")
+    port = tree / "graphics/inkscape-mcpinkscape"
+    shutil.copytree(ROOT / "freebsd/usr/ports/graphics/inkscape-mcpinkscape", port)
+    work, stage = tmp_path / "work", tmp_path / "stage"
+    work.mkdir()
+    # Like bsd.port.mk, discover hooks while the parent is being included.
+    (parent / "Makefile").write_text(f'''DISTVERSION=1.4.4
+PYTHON_CMD={sys.executable}
+WRKDIR={work}
+STAGEDIR={stage}
+DATADIR=/usr/local/share/inkscape
+DISTINFO_FILE=${{MASTERDIR}}/distinfo
+PATCHDIR=${{MASTERDIR}}/files
+SELECTED_OPTIONS=NLS
+INSTALL_DATA=cp
+ECHO_MSG=echo
+_configure_hooks=
+_build_hooks=
+_stage_hooks=
+.if target(pre-configure)
+_configure_hooks+=pre-configure
+.endif
+.if target(pre-build)
+_build_hooks+=pre-build
+.endif
+.if target(post-stage)
+_stage_hooks+=post-stage
+.endif
+.PHONY: configure build stage prepare-stage
+configure: ${{_configure_hooks}}
+build: ${{_build_hooks}}
+stage: ${{_configure_hooks}} ${{_build_hooks}} prepare-stage ${{_stage_hooks}}
+.ORDER: ${{_configure_hooks}} ${{_build_hooks}} prepare-stage ${{_stage_hooks}}
+prepare-stage:
+\tmkdir -p ${{STAGEDIR}}${{DATADIR}}/mcpinkscape
+''')
+    command = [make, "-C", str(port), f"PORTSDIR={tree}"]
+    result = subprocess.run(command + ["stage"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    snapshot = work / "mcpinkscape-port-inputs.json"
+    installed = stage / "usr/local/share/inkscape/mcpinkscape/port-inputs.json"
+    assert installed.read_bytes() == snapshot.read_bytes()
+    captured = snapshot.read_bytes()
+    with (parent / "Makefile").open("a") as output:
+        output.write("# Changed parent recipe must fail the next native-only build.\n")
+    result = subprocess.run(command + ["build"], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Port inputs changed since configure" in result.stdout + result.stderr
+    assert snapshot.read_bytes() == captured
