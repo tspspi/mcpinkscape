@@ -18,10 +18,12 @@ Call `server_status` first.
 | --- | --- | --- |
 | Offline SVG | Deterministic drawing, headless workflows, exports | Changes only documents under `document_root` |
 | Active-window CLI | A focused local Inkscape document | Installed action list limits it to selection, supported styles/transforms, rendered feedback, and no revision-conflict protection |
-| Native bridge | Complete RC1 collaborative live drawing once installed | Optional and ABI-matched; only negotiated methods are advertised |
+| Native bridge | Complete RC1 collaborative live drawing once installed | Optional and ABI-matched; configured tools remain discoverable before connection, then capabilities follow negotiated methods |
 
-An absent native bridge is normal. It must never stop offline operation or the
-available CLI fallback.
+An absent native bridge is normal. The MCP server starts and connects on the
+next status check or live call after Inkscape and the bridge become available.
+Offline operations remain usable. `bridge.required: true` requires the native
+backend for live calls and disables the CLI fallback; it does not prevent startup.
 
 ## Offline Drawing Workflow
 
@@ -73,7 +75,9 @@ For the CLI backend, use this bounded pattern:
 
 The snapshot is a rendered document PNG, not an operating-system screenshot.
 The CLI backend cannot safely create live primitives, so native-only creation
-tools are absent from `tools/list` unless the bridge advertises them. It also
+tools are hidden in explicit `active_window` or `offline` mode. In `auto` and
+`native_uds` mode they remain discoverable while waiting for the native bridge;
+calls report backend unavailability until it is enabled. It also
 cannot observe a live document revision, so live CLI mutations reject
 `expected_revision` rather than silently claiming conflict protection.
 

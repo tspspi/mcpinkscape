@@ -19,7 +19,7 @@ class BridgeConfig(BaseModel):
     tcp_host: str = "127.0.0.1"
     tcp_port: int | None = 61779
     timeout_seconds: float = 30.0
-    required: bool = False
+    required: bool = False  # Require native live control, not availability at startup.
     executable: str = "inkscape"
 
 

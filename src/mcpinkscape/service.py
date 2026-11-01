@@ -65,9 +65,8 @@ class InkscapeService:
         )
         self._native_status: dict[str, Any] | None = None
         self._native_error: str | None = None
-        self._probe_native_bridge()
-        if self.bridge.required and self._native_status is None:
-            raise LiveBackendUnavailableError(self._native_error or "native bridge is required but unavailable")
+        # Connect on demand: Inkscape and its bridge may start after the MCP
+        # server, including when native live control is required.
 
     def close(self) -> None:
         self.snapshots.cleanup()
@@ -87,10 +86,12 @@ class InkscapeService:
                 self.native_bridge.request("document.revision", {})
             self._native_error = None
         except LiveBackendUnavailableError as exc:
+            self.native_bridge.close()
             self._native_status = None
             self._native_error = str(exc)
 
     def server_status(self) -> dict[str, Any]:
+        self._probe_native_bridge()
         active_available = self._active_window_enabled() and self.cli.capabilities.available
         return {
             "package": "mcpinkscape",
@@ -138,6 +139,8 @@ class InkscapeService:
         if not self.access.allow_live_control:
             raise PolicyDeniedError("configured policy forbids live control")
         if self._native_status is None:
+            self._probe_native_bridge()
+        if self._native_status is None:
             raise LiveBackendUnavailableError(self._native_error or "native bridge is unavailable")
 
     def _native_request(
@@ -149,21 +152,37 @@ class InkscapeService:
         self._require_native()
         if not self._native_supports(method):
             raise LiveBackendUnavailableError(f"native bridge does not advertise method '{method}'")
-        return self.native_bridge.request(method, params, expected_revision)
+        return self._send_native_request(method, params, expected_revision)
+
+    def _send_native_request(
+        self, method: str, params: dict[str, Any], expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self.native_bridge.request(method, params, expected_revision)
+        except LiveBackendUnavailableError as exc:
+            self.native_bridge.close()
+            self._native_status = None
+            self._native_error = str(exc)
+            # Never replay a mutation: a lost response may follow a successful edit.
+            raise
 
     def _native_supports(self, method: str) -> bool:
+        if self._native_status is None:
+            self._probe_native_bridge()
         if self._native_status is None:
             return False
         methods = self._native_status.get("methods")
         return isinstance(methods, list) and method in methods
 
     def native_supports_tool(self, tool_name: str) -> bool:
-        """Return availability of a native-only MCP tool for discovery filtering."""
+        """Keep configured live tools discoverable before Inkscape starts."""
         method = NATIVE_TOOL_METHODS.get(tool_name)
+        if self._native_status is None:
+            return bool(method and self.bridge.mode in ("auto", "native_uds"))
         return bool(method and self._native_supports(method))
 
     def _active_window_enabled(self) -> bool:
-        return self.bridge.mode in ("auto", "active_window")
+        return not self.bridge.required and self.bridge.mode in ("auto", "active_window")
 
     @staticmethod
     def _reject_cli_revision(expected_revision: int | None) -> None:
@@ -495,8 +514,11 @@ class InkscapeService:
     def live_status(self) -> dict[str, Any]:
         if not self.access.allow_live_control:
             raise PolicyDeniedError("configured policy forbids live control")
+        self._probe_native_bridge()
         if self._native_status is not None:
-            return {"backend": "native_uds", **self.native_bridge.request("bridge.status", {})}
+            return {"backend": "native_uds", **self._send_native_request("bridge.status", {})}
+        if self.bridge.required or self.bridge.mode == "native_uds":
+            raise LiveBackendUnavailableError(self._native_error or "native bridge is unavailable")
         self._require_live()
         return {
             "backend": "active_window",

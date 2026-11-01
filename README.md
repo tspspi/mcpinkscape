@@ -76,6 +76,12 @@ or changes user or system configuration.
 The server starts successfully without a GUI or native extension. `server_status`
 reports which offline, active-window, and native capabilities are actually
 available.
+The bridge connects on demand when checking status or using live tools, so you
+can launch Inkscape and enable its native bridge later without restarting the
+MCP server. Native live tools remain discoverable while the bridge is offline;
+calls report an unavailable-backend error until it is enabled. `bridge.required`
+requires native live control (disabling the CLI fallback), but does not prevent
+server startup or offline document work.
 
 For complete operator guidance and examples, see [USER_MANUAL.md](USER_MANUAL.md).
 

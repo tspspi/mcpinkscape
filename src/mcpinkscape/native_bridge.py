@@ -52,11 +52,12 @@ class NativeBridgeClient:
 
     def _connect_unix_socket(self) -> socket.socket:
         self._validate_endpoint()
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.settimeout(self.timeout_seconds)
             connection.connect(str(self.path))
         except OSError as exc:
+            connection.close()
             raise LiveBackendUnavailableError(f"cannot connect to native bridge at {self.path}: {exc}") from exc
         return connection
 
@@ -65,11 +66,12 @@ class NativeBridgeClient:
             raise LiveBackendUnavailableError("Windows native bridge TCP host must be exactly 127.0.0.1")
         if (self.tcp_port is None) or not (1 <= int(self.tcp_port) <= 65535):
             raise LiveBackendUnavailableError("Windows native bridge TCP port must be in the range 1 through 65535")
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             connection.settimeout(self.timeout_seconds)
             connection.connect((self.tcp_host, int(self.tcp_port)))
         except OSError as exc:
+            connection.close()
             raise LiveBackendUnavailableError(
                 f"cannot connect to Windows native bridge at {self.tcp_host}:{self.tcp_port}: {exc}"
             ) from exc
@@ -141,6 +143,9 @@ class NativeBridgeClient:
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 self.close()
                 raise LiveBackendUnavailableError(f"native bridge protocol failure: {exc}") from exc
+            except LiveBackendUnavailableError:
+                self.close()
+                raise
 
     def _validate_endpoint(self) -> None:
         try:

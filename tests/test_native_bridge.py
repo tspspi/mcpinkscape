@@ -9,9 +9,95 @@ from pathlib import Path
 import pytest
 
 from mcpinkscape.config.schema import AccessConfig, BridgeConfig
-from mcpinkscape.errors import RevisionConflictError
+from mcpinkscape.errors import LiveBackendUnavailableError, RevisionConflictError
 from mcpinkscape.native_bridge import NativeBridgeClient
 from mcpinkscape.service import InkscapeService, NATIVE_TOOL_METHODS
+
+
+@pytest.mark.parametrize("mode,required", [("auto", False), ("auto", True), ("native_uds", True)])
+@pytest.mark.parametrize("first_call", ["server_status", "live_status", "live_create_shape", "live_list_selection"])
+def test_service_connects_when_bridge_starts_later(tmp_path, mode, required, first_call):
+    path = tmp_path / "late.sock"
+    service = InkscapeService(
+        AccessConfig(document_root = str(tmp_path / "library")),
+        BridgeConfig(mode = mode, required = required, uds = str(path), executable = "missing-inkscape"),
+    )
+    assert service.server_status()["native_bridge"]["available"] is False
+    assert service.native_supports_tool("live_create_shape") is True
+    assert service.create_document("offline")["document_id"]
+    with pytest.raises(LiveBackendUnavailableError):
+        service.live_create_shape("rectangle", {"x": 0, "y": 0, "width": 3, "height": 4})
+
+    # Start a real socket listener only after service construction and a failed call.
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    path.chmod(0o600)
+    listener.listen(1)
+    listener.settimeout(5)
+    received = []
+
+    def server():
+        connection, _ = listener.accept()
+        with connection, connection.makefile("rb") as reader:
+            while raw := reader.readline():
+                request = json.loads(raw)
+                received.append(request["method"])
+                result = {"revision": 12, "object_ids": []}
+                if request["method"] == "bridge.hello":
+                    result = {"methods": ["document.revision", "shape.create", "selection.get"]}
+                connection.sendall((json.dumps({"type": "response", "id": request["id"], "ok": True, "result": result}) + "\n").encode())
+
+    thread = threading.Thread(target = server, daemon = True)
+    thread.start()
+    try:
+        if first_call == "live_create_shape":
+            result = service.live_create_shape("rectangle", {"x": 0, "y": 0, "width": 3, "height": 4})
+        else:
+            result = getattr(service, first_call)()
+        if first_call == "server_status":
+            assert result["native_bridge"]["available"] is True
+        else:
+            assert result["backend"] == "native_uds"
+        assert received[:2] == ["bridge.hello", "document.revision"]
+    finally:
+        service.close()
+        thread.join(timeout = 5)
+        listener.close()
+    assert not thread.is_alive()
+
+
+def test_native_bridge_reconnects_after_eof_without_replaying_request(tmp_path):
+    path = tmp_path / "restart.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    path.chmod(0o600)
+    listener.listen(1)
+    listener.settimeout(5)
+    received = []
+
+    def server():
+        for attempt in range(2):
+            connection, _ = listener.accept()
+            with connection, connection.makefile("rb") as reader:
+                request = json.loads(reader.readline())
+                received.append(request["method"])
+                if attempt == 1:
+                    connection.sendall((json.dumps({"type": "response", "id": request["id"], "ok": True, "result": {"bridge": "ready"}}) + "\n").encode())
+
+    thread = threading.Thread(target = server, daemon = True)
+    thread.start()
+    client = NativeBridgeClient(path)
+    try:
+        with pytest.raises(LiveBackendUnavailableError, match = "closed the connection"):
+            client.request("shape.create", {})
+        assert received == ["shape.create"]
+        assert client.status()["bridge"] == "ready"
+        assert received == ["shape.create", "bridge.hello"]
+    finally:
+        client.close()
+        thread.join(timeout = 5)
+        listener.close()
+    assert not thread.is_alive()
 
 
 def test_native_bridge_json_request_response(tmp_path):

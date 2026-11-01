@@ -3,11 +3,38 @@ from __future__ import annotations
 import asyncio
 
 from fastapi.testclient import TestClient
+from fastmcp import Client
 
 from mcpinkscape.app.server import build_remote_app, build_server
 from mcpinkscape.config.api_keys import derive_argon2id_hash, ensure_kdf_defaults
 from mcpinkscape.config.schema import APIKeyConfig, AccessConfig, BridgeConfig, Config, RemoteServerConfig, TransportConfig
 from mcpinkscape.service import NATIVE_TOOL_METHODS
+
+
+def test_mcp_initializes_and_lists_live_tools_before_required_bridge_starts(tmp_path):
+    async def check():
+        server, state = build_server(Config(
+            stdio = AccessConfig(document_root = str(tmp_path / "stdio")),
+            bridge = BridgeConfig(mode = "native_uds", required = True,
+                                  uds = str(tmp_path / "absent.sock"), executable = "missing-inkscape"),
+        ))
+        try:
+            async with Client(server) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                assert set(NATIVE_TOOL_METHODS) <= tools
+                status = await client.call_tool("server_status", {})
+                assert status.data["native_bridge"]["available"] is False
+                document = await client.call_tool("create_document", {"name": "offline"})
+                assert document.data["document_id"]
+                result = await client.call_tool("live_create_shape", {
+                    "kind": "rectangle", "values": {"x": 0, "y": 0, "width": 3, "height": 4},
+                }, raise_on_error = False)
+                assert result.is_error
+                assert "native bridge socket is unavailable" in str(result.content)
+        finally:
+            state.close()
+
+    asyncio.run(check())
 
 
 def test_server_registers_rc1_tools(tmp_path):
