@@ -1545,7 +1545,7 @@ public:
             return false;
         }
         _running.store(true);
-        _thread = std::thread([this] { serve(); });
+        _thread = std::thread([this, listener = _listen_fd] { serve(listener); });
         g_message("mcpInkscape bridge started at %s", _socket_path.c_str());
         return true;
 #endif
@@ -1560,6 +1560,12 @@ public:
         shutdown(_listen_fd, SHUT_RDWR);
         close(_listen_fd);
         _listen_fd = -1;
+        {
+            std::lock_guard<std::mutex> lock(_client_mutex);
+            // Wake an idle connected client before joining its socket worker.
+            // The worker owns close(), keeping descriptor reuse out of this race.
+            if (_client_fd >= 0) shutdown(_client_fd, SHUT_RDWR);
+        }
         if (_thread.joinable()) _thread.join();
         unlink(_socket_path.c_str());
         g_message("mcpInkscape bridge stopped");
@@ -1604,10 +1610,10 @@ private:
 #endif
     }
 
-    void serve()
+    void serve(int listener)
     {
         while (_running.load()) {
-            auto client = accept(_listen_fd, nullptr, nullptr);
+            auto client = accept(listener, nullptr, nullptr);
             if (client < 0) {
                 if (_running.load()) g_warning("mcpInkscape bridge: accept failed: %s", g_strerror(errno));
                 continue;
@@ -1616,8 +1622,20 @@ private:
                 close(client);
                 continue;
             }
+            {
+                std::lock_guard<std::mutex> lock(_client_mutex);
+                if (!_running.load()) {
+                    close(client);
+                    break;
+                }
+                _client_fd = client;
+            }
             serve_client(client);
-            close(client);
+            {
+                std::lock_guard<std::mutex> lock(_client_mutex);
+                _client_fd = -1;
+                close(client);
+            }
         }
     }
 
@@ -1648,6 +1666,8 @@ private:
 
     std::atomic_bool _running = false;
     int _listen_fd = -1;
+    int _client_fd = -1;
+    std::mutex _client_mutex;
     std::string _state_directory;
     std::string _socket_path;
     std::thread _thread;
@@ -1688,7 +1708,7 @@ private:
             return false;
         }
         _running.store(true);
-        _thread = std::thread([this] { serve_windows(); });
+        _thread = std::thread([this, listener = _listen_socket] { serve_windows(listener); });
         g_message("mcpInkscape bridge started at 127.0.0.1:%ld", port);
         return true;
     }
@@ -1699,18 +1719,34 @@ private:
         shutdown(_listen_socket, SD_BOTH);
         closesocket(_listen_socket);
         _listen_socket = INVALID_SOCKET;
+        {
+            std::lock_guard<std::mutex> lock(_client_mutex);
+            if (_client_socket != INVALID_SOCKET) shutdown(_client_socket, SD_BOTH);
+        }
         if (_thread.joinable()) _thread.join();
         WSACleanup();
         g_message("mcpInkscape bridge stopped");
     }
 
-    void serve_windows()
+    void serve_windows(SOCKET listener)
     {
         while (_running.load()) {
-            auto client = accept(_listen_socket, nullptr, nullptr);
+            auto client = accept(listener, nullptr, nullptr);
             if (client == INVALID_SOCKET) continue;
+            {
+                std::lock_guard<std::mutex> lock(_client_mutex);
+                if (!_running.load()) {
+                    closesocket(client);
+                    break;
+                }
+                _client_socket = client;
+            }
             serve_client_windows(client);
-            closesocket(client);
+            {
+                std::lock_guard<std::mutex> lock(_client_mutex);
+                _client_socket = INVALID_SOCKET;
+                closesocket(client);
+            }
         }
     }
 
@@ -1741,6 +1777,8 @@ private:
 
     std::atomic_bool _running = false;
     SOCKET _listen_socket = INVALID_SOCKET;
+    SOCKET _client_socket = INVALID_SOCKET;
+    std::mutex _client_mutex;
     std::thread _thread;
 #endif
 };
